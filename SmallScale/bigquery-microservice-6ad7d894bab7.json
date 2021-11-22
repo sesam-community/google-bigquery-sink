@@ -1,0 +1,12 @@
+{
+  "type": "service_account",
+  "project_id": "bigquery-microservice",
+  "private_key_id": "6ad7d894bab71584f5a569760784528d12600a4d",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDmaAClxyQEpQRs\nz2BXO7ULUddEwk6snN1oX/Hc9AaAENBWwMvoxU9cCFOCOiVs7vvqAlgbRpfWZwcK\nESf8fh7Po9lr/3/382uv++lyjTnI6cNCRdK5blxrYGmLqzSHzKpBh2pSEuQ7lGH5\nKeMTQtfJUJXh2agDuUTBjE1smGDijLUtAN8qLRtwcNr7Z4vTfSbmFgsRW557o7az\nw0QIpgKukjS14bDErplRQZqqiXbLmfDTDLRDkol2Tr88ptK34TKmocJHjjbBWa1I\nyNCtLUII/yGeVKFaJZCE76O7AHMznIU+18Kv8XcZb9Zd1qUJpx1NsEZyBUMgUjL9\nAUE34JWXAgMBAAECggEAL8FLrRCW8w1+2syqs7nw3t1CKIK7isRikaEdQMYlWMLj\nY6/HM8I9nh4trNa/bhIkjY6Z02Fw1CP7jgcbShab7T6RMHS/AdXmso2ch70kxnNJ\nIMHXGM76gdj0V1oPY7w0Z6uZClTXEFBDdEDNy261ygiVYD/cNpVeXl1lqMX2gs3x\nh/QZPJdHIjBb1u+GOAICIkjL2jywfSmp7GDpD5AVzWgC4CslvPePXMgG9A76V91k\nA23EU6OS8CF6qKM6X+pcaS1ZkAAFejrGdVQggz5us9CuuHw0IWVGSNU8PjWo1e+5\nCJdZY6eLN5H6qGx8AxbxZAQL7lD1HSjK/gJdCJYFwQKBgQD3RPp60BcI2a0UhxVD\nbxcDgBbwbQAInx1gsVdMgYtqS6UrWMX7bRWTm2yF8g40dxHglRjmaOKtydiGGuWy\n0FYbsXHoT8FAs4BtVDquIeK8AXKodhepB++25imN7fmbQ3Qu1Uv+FZMC4CS9mgdl\njZKvXmHmcXCjVB7d5WSaGzZqVwKBgQDuipnXtQURpbD04H4sUeM1ru7w0j0PNOu/\nLlPapWpiTo51xjH++Q8BAtc+bRQO34KD9lcXbq4dBQqa1FESumbZ8Rx2oab1M4b4\n69i4+BLS9K+G4jTV6kigiriIfd1CEdz9f54HzyZI5M+JFPDLuCTkYpmjm1vSjueF\nGQTJqIqmwQKBgQCdhJagJ/GUlL56hjcYdytM8osqa/WKiHo5f5+iQCAk/b1haLLu\noSYOmwM+LN25tGRyEekD1qsYlK3XeEj9aVSBXb+3gx8T7YWRoAelqDZ9F9sHz/rw\nlfqyI9sy6/eHXigkMYKwgOPfABTHp9iwa8iW6OQq3fcoRM1JA/nbZhx7DwKBgFOZ\nT4FBd51PrEylwJJXwIE35ZWQmMWTjmtaGRkvj7EURukPpMXvE0sPa8/8+mKcAmmt\nE6iqqWqSMb1BW4hsu072KTuKO7EDdfIW9cUda7ty9XEYJdwyV3GsLC/prHlTOVe+\nOewStSAm0HUCWcGLr6I6zA2CjROl8Y27zum9n5oBAoGAeOclhiO++sIgkEHqLyDR\n48axrcn+j+AHxVxhFdepakoEHIAhM46XPN/io9oWDAiN/bp4mFZaW7JHXN9YR11z\nnBFRHMzg1KLi9Ii5YNCW2Hs6LrDEdER6geoJs8IQtyCJqs85XjQQ3Z72cpIJ8idT\nNng8GQConf/64V269vMwzzs=\n-----END PRIVATE KEY-----\n",
+  "client_email": "python-bigquery-test@bigquery-microservice.iam.gserviceaccount.com",
+  "client_id": "100681528501442691620",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/python-bigquery-test%40bigquery-microservice.iam.gserviceaccount.com"
+}
