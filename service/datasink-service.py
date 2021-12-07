@@ -1,14 +1,39 @@
+import sesamclient
 from flask import Flask, request, Response
 import cherrypy
 import json
 import os
 import logging
 import paste.translogger
-
+from werkzeug.exceptions import NotFound, InternalServerError, BadRequest
 
 app = Flask(__name__)
 
 logger = logging.getLogger("datasink-service")
+
+jwt_token = os.environ.get("JWT_TOKEN")
+node_url = os.environ.get("NODE_URL")
+pipe_id = os.environ.get("PIPE_ID")
+target_table = os.environ.get("TARGET_TABLE")
+
+node_connection = sesamclient.Connection(node_url, jwt_auth_token=jwt_token)
+
+pipe_schema_url = node_url + "/pipes/" + pipe_id + "/entity-types/sink"
+r = node_connection.do_get_request(pipe_schema_url)
+entity_schema = r.json()
+
+print(entity_schema)
+
+# Convert to BigQuery schema
+#
+# def convert_schema(entity_schema):
+#    ...
+#
+# bigquery_schema = convert_schema(entity_schema)
+
+
+def insert_into_bigquery(entities):
+    pass
 
 
 @app.route('/', methods=['GET'])
@@ -18,21 +43,14 @@ def root():
 
 @app.route('/receiver', methods=['POST'])
 def receiver():
-    # create output directory
-    directory = os.path.join(os.getcwd(), "received")
-    os.makedirs(directory, exist_ok=True)
-
     # get entities from request and write each of them to a file
-    entities = request.get_json()
-    if not isinstance(entities, list):
-        entities = [entities]
 
-    for entity in entities:
-        entity_id = entity["_id"]
-        filename = os.path.join(directory, entity_id + ".json")
-        logger.info("Writing entity \"%s\" to file '%s'" % (entity_id, filename))
-        with open(filename, "w") as fp:
-            json.dump(entity, fp, indent=4, sort_keys=True)
+    entities = request.json
+
+    try:
+        insert_into_bigquery(entities)
+    except BaseException as e:
+        raise BadRequest(f"Something went wrong! {str(e)}")
 
     # create the response
     return Response("Thanks!", mimetype='text/plain')

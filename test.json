@@ -1,0 +1,14 @@
+[
+    {"_id": "1", "_updated": 0, "_previous":null, "name": "item 1"},
+    {"_id": "2", "_updated": 1, "_previous":null, "name": "item 2"},
+    {"_id": "3", "_updated": 2, "_previous":null, "name": "item 3"},
+    {"_id": "4", "_updated": 3, "_previous":null, "name": "item 4"},
+    {"_id": "5", "_updated": 4, "_previous":null, "name": "item 5"},
+    {"_id": "1", "_updated": 5, "_previous":0, "_deleted": true, "name": "item 1 was deleted"},
+    {"_id": "2", "_updated": 6, "_previous":1, "name": "item 2 has changed"},
+    {"_id": "3", "_updated": 7, "_previous":2, "name": "item 3 has changed again"},
+    {"_id": "3", "_updated": 8, "_previous":7, "name": "item 3 has changed yet again"},
+    {"_id": "3", "_updated": 9, "_previous":8, "name": "item 3 has changed final change"},
+    {"_id": "5", "_updated": 10, "_previous":4, "_deleted": true, "name": "item 5 was deleted"},
+    {"_id": "5", "_updated": 11, "_previous":10, "name": "item 5 was reinstated"}
+]
