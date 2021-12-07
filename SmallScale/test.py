@@ -1,61 +1,113 @@
 from google.cloud import bigquery
-import google
+from google.cloud.exceptions import NotFound
 import os
+import json
+import time
 
 credentials_path = '/home/mikkel/Desktop/BigQueryMicroservice/BigQueryMicroservice/SmallScale/bigquery-microservice-8767565ff502.json'
 os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = credentials_path
 
 client = bigquery.Client()
-#table_id = 'bigquery-microservice.tesset.testset-table'
 
-table_id = 'testsetTable'
-cntr = 2
 
-dataset_name = client.list_tables('bigquery-microservice.tesset')
+def generate_schema(example_entity):
+    schema = []
+    for key, value in example_entity.items():
+        if key in ['_previous','_updated']:
+            schema.append(bigquery.SchemaField(key, "INTEGER"))
+        elif isinstance(value, str):
+            schema.append(bigquery.SchemaField(key, "STRING"))
+        elif isinstance(value, bool):
+            schema.append(bigquery.SchemaField(key, "BOOLEAN"))
+        elif isinstance(value, int):
+            schema.append(bigquery.SchemaField(key, "INTEGER"))
 
-for ele in dataset_name:
-    if (table_id + str(cntr)) == ele.table_id:
-        cntr += 1
+    return schema
 
-new_table = table_id + str(cntr)
 
-dml_statement = f"""CREATE TABLE bigquery-microservice.tesset.{new_table}
-(id INTEGER, value INTEGER, comment STRING);
-INSERT INTO bigquery-microservice.tesset.{new_table}
-VALUES (1,2,'This is a comment'),
-(2,2,'delete');
-MERGE INTO bigquery-microservice.tesset.{table_id} T
-USING bigquery-microservice.tesset.{new_table} S
-ON T.id = S.id
-WHEN NOT MATCHED THEN
-    INSERT (id, value, comment)
-    VALUES (id, value, comment)
-WHEN MATCHED AND S.comment = 'delete' THEN
-    DELETE;
-DROP TABLE bigquery-microservice.tesset.{new_table}
+def create_table(table_id, schema, replace=False):
+    try:
+        table = client.get_table(table_id)  # Make an API request.
+        if replace:
+            # Drop the table
+            client.delete_table(table_id)
+        else:
+            return table
+    except NotFound:
+        pass
+
+    table_obj = bigquery.Table(table_id, schema=schema)
+    table = client.create_table(table_obj)
+
+    while True:
+        try:
+            _table = client.get_table(table_id)
+            return _table
+        except NotFound:
+            pass
+
+#Get testdata from file, and store as json.
+with open("../testdata.json") as infile:
+    test_data = json.loads(infile.read())
+
+target_name = 'mikkel_test'
+source_name = 'mikkel_test_temp'
+dataset_name = 'bigquery-microservice.tesset'
+
+#Get object from test_data and use it to create schema
+example_entity = test_data[-2]
+table_schema = generate_schema(example_entity)
+
+# Create target table and temp tables
+create_table(dataset_name + "." + target_name, table_schema, replace=True)
+create_table(dataset_name + "." + source_name, table_schema, replace=True)
+
+# Upload test data to temp table
+#Due to data being uploaded asynchronisly, the program loops until upload is successful
+timeout = 60
+start_time = time.time()
+while True:
+    try:
+        errors = client.insert_rows_json(dataset_name + "." + source_name, test_data)
+
+        if errors == []:
+           print('New rows have been added to table')
+        else:
+            print(f'Errors occured while adding rows to table: {errors}')
+
+        break
+    except NotFound as e:
+        if time.time() - start_time > timeout:
+            raise e
+        time.sleep(5)
+
+# Create MERGE query
+#Make schema into array of strings
+schema_arr = []
+for ele in table_schema:
+    schema_arr.append(ele.name)
+
+#Merge temp table and target table
+merge_query = f"""
+MERGE {dataset_name}.{target_name} T
+USING
+(SELECT {", ".join(["t." + ele.name for ele in table_schema])}
+FROM (
+SELECT _id, MAX(_updated) AS _updated
+FROM {dataset_name}.{source_name}
+GROUP BY _id
+)AS i JOIN {dataset_name}.{source_name} AS t ON t._id = i._id AND t._updated = i._updated) S
+ON T._id = S._id
+WHEN MATCHED AND S._deleted = true THEN
+    DELETE
+WHEN NOT MATCHED AND (S._deleted IS NULL OR S._deleted = false) THEN
+    INSERT ({", ".join(schema_arr)})
+    VALUES ({", ".join(["S." + ele.name for ele in table_schema])})
+WHEN MATCHED AND (S._deleted IS NULL OR S._deleted = false) THEN
+    UPDATE
+    SET {", ".join([ele.name + " = S." + ele.name for ele in table_schema])};
 """
 
-
-#dml_statement  = "INSERT INTO bigquery-microservice.tesset.testset-table\n(id, value, comment)\nVALUES ('2',25,'Another test value'),\n('3',14,'Yet another test value'"
-
-query_job = client.query(dml_statement)
-    #INSERT bigquery-microservice.tesset.testset-table (id, value, comment)
-    #VALUES ('2',25,'Another test value'),
-    #('3',14,'Yet another test value');
-#)
-#try:
+#Perform query and await result
+query_job = client.query(merge_query)
 query_job.result()
-
-#except:
-#    print('An error occured')
-
-#rows_to_insert = [
-#    {'id':'1', 'value':1, 'comment':'Comments are optional'}
-#]
-
-#errors = client.insert_rows_json(table_id, rows_to_insert)
-
-#if errors == []:
-#    print('New rows have been added to table')
-#else:
-#    print(f'Errors occured while adding rows to table: {errors}')
