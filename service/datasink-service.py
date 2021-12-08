@@ -38,7 +38,7 @@ def create_table(table_id, schema, replace=False):
 
 def generate_schema(entity_schema):
     schema = []
-    for key, value in entity_schema["properties"]:
+    for key, value in entity_schema["properties"].items():
             if "anyOf" in value:
                 field_types = [v for v in value["anyOf"] if v["type"] != "null"]
                 field_type = field_types[0]["type"]
