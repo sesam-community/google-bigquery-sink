@@ -15,6 +15,7 @@ os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = credentials_path
 
 client = bigquery.Client()
 
+
 def create_table(table_id, schema, replace=False):
     try:
         table = client.get_table(table_id)  # Make an API request.
@@ -35,6 +36,7 @@ def create_table(table_id, schema, replace=False):
             return _table
         except NotFound:
            pass
+
 
 def generate_schema(entity_schema):
     schema = []
