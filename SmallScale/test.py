@@ -9,10 +9,29 @@ os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = credentials_path
 
 client = bigquery.Client()
 
-
 def generate_schema(example_entity):
     schema = []
-    for key, value in example_entity.items():
+    field_type = ""
+    field_types = []
+    nullable = False
+    for key, value in example_entity.properties:
+        try:
+            field_type = value["type"]
+            if field_type == 'boolean':
+                schema.append(bigquery.SchemaField(key, "BOOLEAN"))
+            elif field_type == 'string':
+                schema.append(bigquery.SchemaField(key, "STRING"))
+            elif field_type == 'integer':
+                schema.append(bigquery.SchemaField(key, "INTEGER"))
+        except:
+            field_types = value.anyOf
+            for ele in field_types:
+                if ele.type == 'null':
+                    nullable = true
+                else:
+                    field_type = ele.type
+            schema.append(bigquery.SchemaField(key,))
+
         if key in ['_previous','_updated']:
             schema.append(bigquery.SchemaField(key, "INTEGER"))
         elif isinstance(value, str):
