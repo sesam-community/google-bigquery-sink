@@ -157,6 +157,8 @@ def receiver():
 
     entities = request.json
 
+    logger.info("Entitities: %s"% (entities))
+
     try:
         insert_into_bigquery(entities, big_query_schema)
     except BaseException as e:
