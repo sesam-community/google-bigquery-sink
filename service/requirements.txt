@@ -4,3 +4,4 @@ werkzeug==0.16.1
 python-dateutil==2.5.3
 pytz==2017.3
 sesamclient
+google-cloud-bigquery
