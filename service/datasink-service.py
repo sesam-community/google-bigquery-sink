@@ -10,8 +10,17 @@ from werkzeug.exceptions import NotFound, InternalServerError, BadRequest
 from google.cloud import bigquery
 from google.cloud.exceptions import NotFound
 
-credentials_path = '/home/mikkel/Desktop/BigQueryMicroservice/BigQueryMicroservice/SmallScale/bigquery-microservice-8767565ff502.json'
-os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = credentials_path
+
+if 'GOOGLE_APPLICATION_CREDENTIALS' not in os.environ:
+    # Local dev env for mikkel
+    credentials_path = '/home/mikkel/Desktop/BigQueryMicroservice/BigQueryMicroservice/SmallScale/bigquery-microservice-8767565ff502.json'
+    os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = credentials_path
+else:
+    # Dev env in the cloud
+    credentials_content = os.environ['GOOGLE_APPLICATION_CREDENTIALS']
+    with open("/tmp/bigquery-microservice-8767565ff502.json", "w") as outfile:
+        outfile.write(credentials_content)
+    os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = "/tmp/bigquery-microservice-8767565ff502.json"
 
 client = bigquery.Client()
 

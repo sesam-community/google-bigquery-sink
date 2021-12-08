@@ -18,6 +18,7 @@ RUN DEBIAN_FRONTEND=noninteractive dpkg-reconfigure locales
 ENV PYTHON_EGG_CACHE /tmp
 ENV PYTHONIOENCODING UTF-8
 
+
 # Add curl and some other base tools
 RUN \
 apt-get update && \
@@ -45,5 +46,5 @@ COPY ./service /service
 WORKDIR /service
 RUN pip install -r requirements.txt
 EXPOSE 5000/tcp
-ENTRYPOINT ["python"]
+ENTRYPOINT ["python3"]
 CMD ["datasink-service.py"]

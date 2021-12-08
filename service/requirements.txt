@@ -1,4 +1,7 @@
 requests==2.25.1
+cheroot==8.5.2
+Paste==2.0.2
+CherryPy==18.6.1
 flask==1.1.4
 werkzeug==0.16.1
 python-dateutil==2.7.2
