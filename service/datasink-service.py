@@ -95,6 +95,11 @@ def insert_into_bigquery(entities, table_schema):
     create_table(target_table, big_query_schema)
     create_table(source_table, big_query_schema, replace=True)
 
+    #Remove _ts and _hash
+    for entity in entities:
+        entity.pop("_ts", None)
+        entity.pop("_hash", None)
+
     # Upload test data to temp table
     # Due to data being uploaded asynchronisly, the program loops until upload is successful
     timeout = 60
@@ -104,9 +109,9 @@ def insert_into_bigquery(entities, table_schema):
             errors = client.insert_rows_json(source_table, entities)
 
             if errors == []:
-                print('New rows have been added to table')
+                logger.info('New rows have been added to table')
             else:
-                print(f'Errors occured while adding rows to table: {errors}')
+                raise AssertionError(f"Failed to insert json to temp table: {errors}")
 
             break
         except NotFound as e:
