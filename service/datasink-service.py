@@ -141,6 +141,8 @@ def insert_into_bigquery(entities, table_schema):
         SET {", ".join([ele.name + " = S." + ele.name for ele in table_schema])};
     """
 
+    #logger.info("")
+
     # Perform query and await result
     query_job = client.query(merge_query)
     query_job.result()
