@@ -83,6 +83,14 @@ pipe_schema_url = node_url + "/pipes/" + pipe_id + "/entity-types/sink"
 r = node_connection.do_get_request(pipe_schema_url)
 entity_schema = r.json()
 
+default_properties = {
+    "_deleted": {"type": "boolean"},
+    "_previous": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+    "_updated": {"type": "integer"}
+}
+
+entity_schema["properties"].update(default_properties)
+
 big_query_schema = generate_schema(entity_schema)
 
 
