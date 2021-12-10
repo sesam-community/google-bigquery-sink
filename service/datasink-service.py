@@ -83,21 +83,40 @@ pipe_schema_url = node_url + "/pipes/" + pipe_id + "/entity-types/sink"
 r = node_connection.do_get_request(pipe_schema_url)
 entity_schema = r.json()
 
-print(entity_schema)
-
 big_query_schema = generate_schema(entity_schema)
 
 
-def insert_into_bigquery(entities, table_schema, is_full):
-    #Check for is_full
-    source_table = ""
-    if is_full:
-        #If is_full is true set source_table equal to target_table. That way the insertion further down will insert directly
-        #into target_table.
-        source_table = target_table
+def insert_into_bigquery(entities, table_schema, is_full, is_first):
+    #Remove _ts and _hash
+    for entity in entities:
+        entity.pop("_ts", None)
+        entity.pop("_hash", None)
 
-        # Create target table
-        create_table(target_table, big_query_schema, replace=True)
+    #Check for is_full
+    if is_full:
+        if is_first:
+            #Create target table
+            create_table(target_table, big_query_schema, replace=True)
+
+        # Upload test data to target_table
+        # Due to data being uploaded asynchronously, the program loops until upload is successful
+        timeout = 60
+        start_time = time.time()
+        while True:
+            try:
+                errors = client.insert_rows_json(target_table, entities)
+
+                if errors == []:
+                    logger.info('New rows have been added to table')
+                else:
+                    raise AssertionError(f"Failed to insert json to temp table: {errors}")
+
+                break
+            except NotFound as e:
+                if time.time() - start_time > timeout:
+                    raise e
+                time.sleep(5)
+
     else:
         #If is_full is false, create a sepparate source table. The tables will be merged later.
         source_table = target_table + '_temp'
@@ -106,32 +125,25 @@ def insert_into_bigquery(entities, table_schema, is_full):
         create_table(target_table, big_query_schema)
         create_table(source_table, big_query_schema, replace=True)
 
-    #Remove _ts and _hash
-    for entity in entities:
-        entity.pop("_ts", None)
-        entity.pop("_hash", None)
+        # Upload test data to temp table
+        # Due to data being uploaded asynchronously, the program loops until upload is successful
+        timeout = 60
+        start_time = time.time()
+        while True:
+            try:
+                errors = client.insert_rows_json(source_table, entities)
 
-    # Upload test data to temp table
-    # Due to data being uploaded asynchronisly, the program loops until upload is successful
-    timeout = 60
-    start_time = time.time()
-    while True:
-        try:
-            errors = client.insert_rows_json(source_table, entities)
+                if errors == []:
+                    logger.info('New rows have been added to table')
+                else:
+                    raise AssertionError(f"Failed to insert json to temp table: {errors}")
 
-            if errors == []:
-                logger.info('New rows have been added to table')
-            else:
-                raise AssertionError(f"Failed to insert json to temp table: {errors}")
+                break
+            except NotFound as e:
+                if time.time() - start_time > timeout:
+                    raise e
+                time.sleep(5)
 
-            break
-        except NotFound as e:
-            if time.time() - start_time > timeout:
-                raise e
-            time.sleep(5)
-
-    #If is_full is false, merge the source_table into the target_table.
-    if not is_full:
         # Create MERGE query
         # Make schema into array of strings
         schema_arr = []
@@ -159,8 +171,6 @@ def insert_into_bigquery(entities, table_schema, is_full):
             SET {", ".join([ele.name + " = S." + ele.name for ele in table_schema])};
         """
 
-        #logger.info("")
-
         # Perform query and await result
         query_job = client.query(merge_query)
         query_job.result()
@@ -177,14 +187,14 @@ def receiver():
 
     entities = request.json
 
-    logger.info("Entitities: %s"% (entities))
+    is_full = request.args.get('is_full', "false")
+    is_full = (is_full.lower() == "true" and True) or False
 
-    is_full = request.args.get('is_full')
-    if is_full == None:
-        is_full = False
+    is_first = request.args.get('is_first', "false")
+    is_first = (is_first.lower() == "true" and True) or False
 
     try:
-        insert_into_bigquery(entities, big_query_schema, is_full)
+        insert_into_bigquery(entities, big_query_schema, is_full, is_first)
     except BaseException as e:
         raise BadRequest(f"Something went wrong! {str(e)}")
 
