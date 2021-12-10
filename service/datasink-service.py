@@ -88,12 +88,23 @@ print(entity_schema)
 big_query_schema = generate_schema(entity_schema)
 
 
-def insert_into_bigquery(entities, table_schema):
-    source_table = target_table + '_temp'
+def insert_into_bigquery(entities, table_schema, is_full):
+    #Check for is_full
+    source_table = ""
+    if is_full:
+        #If is_full is true set source_table equal to target_table. That way the insertion further down will insert directly
+        #into target_table.
+        source_table = target_table
 
-    # Create target table and temp tables
-    create_table(target_table, big_query_schema)
-    create_table(source_table, big_query_schema, replace=True)
+        # Create target table
+        create_table(target_table, big_query_schema, replace=True)
+    else:
+        #If is_full is false, create a sepparate source table. The tables will be merged later.
+        source_table = target_table + '_temp'
+
+        # Create target table and temp tables
+        create_table(target_table, big_query_schema)
+        create_table(source_table, big_query_schema, replace=True)
 
     #Remove _ts and _hash
     for entity in entities:
@@ -119,38 +130,40 @@ def insert_into_bigquery(entities, table_schema):
                 raise e
             time.sleep(5)
 
-    # Create MERGE query
-    # Make schema into array of strings
-    schema_arr = []
-    for ele in table_schema:
-        schema_arr.append(ele.name)
+    #If is_full is false, merge the source_table into the target_table.
+    if not is_full:
+        # Create MERGE query
+        # Make schema into array of strings
+        schema_arr = []
+        for ele in table_schema:
+            schema_arr.append(ele.name)
 
-    # Merge temp table and target table
-    merge_query = f"""
-    MERGE {target_table} T
-    USING
-    (SELECT {", ".join(["t." + ele.name for ele in table_schema])}
-    FROM (
-    SELECT _id, MAX(_updated) AS _updated
-    FROM {source_table}
-    GROUP BY _id
-    )AS i JOIN {source_table} AS t ON t._id = i._id AND t._updated = i._updated) S
-    ON T._id = S._id
-    WHEN MATCHED AND S._deleted = true THEN
-        DELETE
-    WHEN NOT MATCHED AND (S._deleted IS NULL OR S._deleted = false) THEN
-        INSERT ({", ".join(schema_arr)})
-        VALUES ({", ".join(["S." + ele.name for ele in table_schema])})
-    WHEN MATCHED AND (S._deleted IS NULL OR S._deleted = false) THEN
-        UPDATE
-        SET {", ".join([ele.name + " = S." + ele.name for ele in table_schema])};
-    """
+        # Merge temp table and target table
+        merge_query = f"""
+        MERGE {target_table} T
+        USING
+        (SELECT {", ".join(["t." + ele.name for ele in table_schema])}
+        FROM (
+        SELECT _id, MAX(_updated) AS _updated
+        FROM {source_table}
+        GROUP BY _id
+        )AS i JOIN {source_table} AS t ON t._id = i._id AND t._updated = i._updated) S
+        ON T._id = S._id
+        WHEN MATCHED AND S._deleted = true THEN
+            DELETE
+        WHEN NOT MATCHED AND (S._deleted IS NULL OR S._deleted = false) THEN
+            INSERT ({", ".join(schema_arr)})
+            VALUES ({", ".join(["S." + ele.name for ele in table_schema])})
+        WHEN MATCHED AND (S._deleted IS NULL OR S._deleted = false) THEN
+            UPDATE
+            SET {", ".join([ele.name + " = S." + ele.name for ele in table_schema])};
+        """
 
-    #logger.info("")
+        #logger.info("")
 
-    # Perform query and await result
-    query_job = client.query(merge_query)
-    query_job.result()
+        # Perform query and await result
+        query_job = client.query(merge_query)
+        query_job.result()
 
 
 @app.route('/', methods=['GET'])
@@ -166,8 +179,12 @@ def receiver():
 
     logger.info("Entitities: %s"% (entities))
 
+    is_full = request.args.get('is_full')
+    if is_full == None:
+        is_full = False
+
     try:
-        insert_into_bigquery(entities, big_query_schema)
+        insert_into_bigquery(entities, big_query_schema, is_full)
     except BaseException as e:
         raise BadRequest(f"Something went wrong! {str(e)}")
 
