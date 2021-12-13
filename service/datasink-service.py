@@ -112,8 +112,7 @@ def insert_into_bigquery(entities, table_schema, is_full, is_first):
         start_time = time.time()
         while True:
             try:
-                if len(entities) > 0:
-                    errors = client.insert_rows_json(target_table, entities)
+                errors = client.insert_rows_json(target_table, entities)
 
                 if errors == []:
                     logger.info('New rows have been added to table')
@@ -140,8 +139,7 @@ def insert_into_bigquery(entities, table_schema, is_full, is_first):
         start_time = time.time()
         while True:
             try:
-                if len(entities) > 0:
-                    errors = client.insert_rows_json(source_table, entities)
+                errors = client.insert_rows_json(source_table, entities)
 
                 if errors == []:
                     logger.info('New rows have been added to table')
@@ -204,7 +202,8 @@ def receiver():
     is_first = (is_first.lower() == "true" and True) or False
 
     try:
-        insert_into_bigquery(entities, big_query_schema, is_full, is_first)
+        if len(entities) > 0:
+          insert_into_bigquery(entities, big_query_schema, is_full, is_first)
     except BaseException as e:
         raise BadRequest(f"Something went wrong! {str(e)}")
 
