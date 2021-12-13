@@ -203,7 +203,7 @@ def receiver():
 
     try:
         if len(entities) > 0:
-          insert_into_bigquery(entities, big_query_schema, is_full, is_first)
+            insert_into_bigquery(entities, big_query_schema, is_full, is_first)
     except BaseException as e:
         raise BadRequest(f"Something went wrong! {str(e)}")
 
