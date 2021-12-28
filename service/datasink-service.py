@@ -1,6 +1,7 @@
 import sesamclient
 from flask import Flask, request, Response
 import cherrypy
+from more_itertools import sliced, chunked, collapse
 import json
 import time
 import os
@@ -9,11 +10,17 @@ import paste.translogger
 from werkzeug.exceptions import NotFound, InternalServerError, BadRequest
 from google.cloud import bigquery
 from google.cloud.exceptions import NotFound
+from google.api_core.exceptions import GoogleAPICallError
 
 
 if 'GOOGLE_APPLICATION_CREDENTIALS' not in os.environ:
     # Local dev env for mikkel
     credentials_path = '/home/mikkel/Desktop/BigQueryMicroservice/BigQueryMicroservice/SmallScale/bigquery-microservice-8767565ff502.json'
+
+    if not os.path.exists(credentials_path):
+        # Local dev env for tom
+        credentials_path = '/home/tomb/Downloads/bigquery-microservice-70d791ad9009.json'
+
     os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = credentials_path
 else:
     # Dev env in the cloud
@@ -24,6 +31,7 @@ else:
 
 client = bigquery.Client()
 
+cast_columns = []
 
 def create_table(table_id, schema, replace=False):
     try:
@@ -65,6 +73,9 @@ def generate_schema(entity_schema):
                 schema.append(bigquery.SchemaField(key, "STRING"))
             elif field_type == 'integer':
                 schema.append(bigquery.SchemaField(key, "INTEGER"))
+            elif field_type in ['object', 'array']:
+                schema.append(bigquery.SchemaField(key, "STRING"))
+                cast_columns.append(key)
 
     return schema
 
@@ -93,12 +104,24 @@ entity_schema["properties"].update(default_properties)
 
 big_query_schema = generate_schema(entity_schema)
 
+from pprint import pprint
+pprint(entity_schema, indent=2)
+
+rows_seen = 0
 
 def insert_into_bigquery(entities, table_schema, is_full, is_first):
     #Remove _ts and _hash
     for entity in entities:
         entity.pop("_ts", None)
         entity.pop("_hash", None)
+
+    if cast_columns:
+        # Cast any arrays and objects to string
+        for entity in entities:
+            for key in cast_columns:
+                value = entity.get(key)
+                if value is not None:
+                    entity[key] = json.dumps(value)
 
     #Check for is_full
     if is_full:
@@ -109,22 +132,68 @@ def insert_into_bigquery(entities, table_schema, is_full, is_first):
         # Upload test data to target_table
         # Due to data being uploaded asynchronously, the program loops until upload is successful
         timeout = 60
+
+        existing_count = [item[0] for item in
+                          client.query(f'SELECT COUNT(*) FROM `{target_table}`').result()][0]
+
+        logger.info("Row count before insert is: %s" % existing_count)
+
+        slices = len(entities)
+        remaining_entities = list(sliced(entities, slices))
+        notfound_retries = 3
+
+        while remaining_entities:
+            for ix, chunk in enumerate(remaining_entities):
+                try:
+                    errors = client.insert_rows_json(target_table, chunk)
+                    notfound_retries = 3
+                    if errors == []:
+                        logger.info(f'{len(chunk)} new rows have been added to table')
+                    else:
+                        raise AssertionError(f"Failed to insert json to temp table: {errors}")
+                except NotFound as e:
+                    notfound_retries -= 1
+                    if notfound_retries == 0:
+                        raise AssertionError("Got too many NotFound errors in a row, bailing out...")
+                    else:
+                        logger.info("Got a NotFound error, retrying...")
+                    time.sleep(5)
+                except GoogleAPICallError as ge:
+                    if ge.code == 413 and "Your client issued a request that was too large" in ge.message:
+                        # We need to split the entities into smaller chunks and try again
+                        logger.info("Current batch is too big, slicing it up...")
+
+                        # Gather and split the remaining entities one more level
+                        slices = int(len(chunk) / 2)
+                        tmp = []
+                        for c in remaining_entities[ix:]:
+                            tmp.extend(c)
+
+                        remaining_entities = list(sliced(tmp, slices))
+                        logger.info("Trying with new batch size: %s for the %s "
+                                    "remaining entities" % (len(remaining_entities[0]), len(tmp)))
+                        # New loop
+                        break
+                    else:
+                        raise ge
+                except BaseException as e:
+                    logger.exception("insert_rows_json() failed for unknown reasons!")
+                    raise e
+
         start_time = time.time()
         while True:
-            try:
-                errors = client.insert_rows_json(target_table, entities)
-
-                if errors == []:
-                    logger.info('New rows have been added to table')
-                else:
-                    raise AssertionError(f"Failed to insert json to temp table: {errors}")
-
+            # Loop until count includes the new entities
+            count = [item[0] for item in
+                     client.query(f'SELECT COUNT(*) FROM `{target_table}`').result()][0]
+            if (count - existing_count) == len(entities):
                 break
-            except NotFound as e:
-                if time.time() - start_time > timeout:
-                    raise e
-                time.sleep(5)
 
+            if time.time() - start_time > timeout:
+                raise AssertionError(f"Timed out while waiting for row count to increase to include "
+                                     f"the inserted entities, the last row count was {count} - expected "
+                                     f"{existing_count + len(entities)}")
+
+            time.sleep(5)
     else:
         #If is_full is false, create a sepparate source table. The tables will be merged later.
         source_table = target_table + '_temp'
@@ -142,7 +211,7 @@ def insert_into_bigquery(entities, table_schema, is_full, is_first):
                 errors = client.insert_rows_json(source_table, entities)
 
                 if errors == []:
-                    logger.info('New rows have been added to table')
+                    logger.info('%s new rows have been added to table' % len(entities))
                 else:
                     raise AssertionError(f"Failed to insert json to temp table: {errors}")
 
@@ -192,6 +261,7 @@ def root():
 @app.route('/receiver', methods=['POST'])
 def receiver():
     # get entities from request and write each of them to a file
+    global rows_seen
 
     entities = request.json
 
@@ -201,10 +271,23 @@ def receiver():
     is_first = request.args.get('is_first', "false")
     is_first = (is_first.lower() == "true" and True) or False
 
+    is_last = request.args.get('is_last', "false")
+    is_last = (is_last.lower() == "true" and True) or False
+
     try:
         if len(entities) > 0:
             insert_into_bigquery(entities, big_query_schema, is_full, is_first)
+
+        if is_first:
+            rows_seen = len(entities)
+        else:
+            rows_seen += len(entities)
+
+        if is_last:
+            logger.info("I saw %s rows during this run" % rows_seen)
+
     except BaseException as e:
+        logger.exception("Something went wrong")
         raise BadRequest(f"Something went wrong! {str(e)}")
 
     # create the response

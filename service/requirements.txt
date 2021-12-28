@@ -8,3 +8,4 @@ python-dateutil==2.7.2
 pytz==2017.3
 sesamclient==0.2.119
 google-cloud-bigquery==2.31.0
+more-itertools
