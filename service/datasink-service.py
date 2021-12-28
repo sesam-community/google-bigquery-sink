@@ -141,8 +141,10 @@ def insert_into_bigquery(entities, table_schema, is_full, is_first):
         slices = len(entities)
         remaining_entities = list(sliced(entities, slices))
         notfound_retries = 3
+        done = False
 
-        while remaining_entities:
+        while not done:
+            last_ix = len(remaining_entities) - 1
             for ix, chunk in enumerate(remaining_entities):
                 try:
                     errors = client.insert_rows_json(target_table, chunk)
@@ -151,6 +153,9 @@ def insert_into_bigquery(entities, table_schema, is_full, is_first):
                         logger.info(f'{len(chunk)} new rows have been added to table')
                     else:
                         raise AssertionError(f"Failed to insert json to temp table: {errors}")
+
+                    if ix == last_ix:
+                        done = True
                 except NotFound as e:
                     notfound_retries -= 1
                     if notfound_retries == 0:
