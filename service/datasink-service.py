@@ -109,6 +109,90 @@ pprint(entity_schema, indent=2)
 
 rows_seen = 0
 
+
+def insert_entities_into_table(table, entities):
+    existing_count = [item[0] for item in
+                      client.query(f'SELECT COUNT(*) FROM `{table}`').result()][0]
+
+    logger.info("Row count before insert into table '%s' is: %s" % (table, existing_count))
+
+    slices = len(entities)
+    remaining_entities = list(sliced(entities, slices))
+    notfound_retries = 10
+    done = False
+
+    while not done:
+        last_ix = len(remaining_entities) - 1
+        for ix, chunk in enumerate(remaining_entities):
+            try:
+                errors = client.insert_rows_json(table, chunk)
+                notfound_retries = 3
+                if errors == []:
+                    logger.info(f"{len(chunk)} new rows have been added to table '%s'" % table)
+                else:
+                    raise AssertionError(f"Failed to insert json for table '%s':  %s" % (table, errors))
+
+                if ix == last_ix:
+                    done = True
+            except NotFound as e:
+                notfound_retries -= 1
+                if notfound_retries == 0:
+                    raise AssertionError("Got too many NotFound errors in a row for table '%s', bailing out..." % table)
+                else:
+                    logger.info("Got a NotFound error for table '%s', retrying..." % table)
+
+                time.sleep(1)
+
+                # Skip the chunks we've already inserted
+                remaining_entities = remaining_entities[ix:]
+
+                # New loop
+                break
+            except GoogleAPICallError as ge:
+                if ge.code == 413 and "Your client issued a request that was too large" in ge.message:
+                    # We need to split the entities into smaller chunks and try again
+                    logger.info("Current batch is too big for table '%s', slicing it up..." % table)
+
+                    # Gather and split the remaining entities one more level
+                    slices = int(len(chunk) / 2)
+                    tmp = []
+                    for c in remaining_entities[ix:]:
+                        tmp.extend(c)
+
+                    remaining_entities = list(sliced(tmp, slices))
+                    logger.info("Trying with new batch size for table '%s': %s for the %s "
+                                "remaining entities" % (table, len(remaining_entities[0]), len(tmp)))
+                    # New loop
+                    break
+                else:
+                    # Fail for any other errors
+                    raise ge
+            except BaseException as e:
+                logger.exception("insert_rows_json('%s') failed for unknown reasons!" % table)
+                raise e
+
+    timeout = 120
+    start_time = time.time()
+    while True:
+        # Loop until count includes the new entities
+        count = [item[0] for item in
+                 client.query(f'SELECT COUNT(*) FROM `{table}`').result()][0]
+        if (count - existing_count) == len(entities):
+            logger.info("Row count for table '%s' after inserting all entities in batch is: %s" % (table, count))
+            break
+
+        logger.info(f"The last row count for table '{table}' was {count} - "
+                    f"expected {existing_count + len(entities)} - retrying...")
+
+        if time.time() - start_time > timeout:
+            msg = f"Timed out while waiting for row count for table '{table}' to increase to include " \
+                  f"the inserted entities, the last row count was {count} - expected {existing_count + len(entities)}"
+            logger.error(msg)
+            raise AssertionError(msg)
+
+        time.sleep(5)
+
+
 def insert_into_bigquery(entities, table_schema, is_full, is_first):
     #Remove _ts and _hash
     for entity in entities:
@@ -123,108 +207,30 @@ def insert_into_bigquery(entities, table_schema, is_full, is_first):
                 if value is not None:
                     entity[key] = json.dumps(value)
 
-    #Check for is_full
+    # Check for is_full
     if is_full:
         if is_first:
-            #Create target table
+            # Create target table
             create_table(target_table, big_query_schema, replace=True)
 
         # Upload test data to target_table
         # Due to data being uploaded asynchronously, the program loops until upload is successful
-        timeout = 60
-
-        existing_count = [item[0] for item in
-                          client.query(f'SELECT COUNT(*) FROM `{target_table}`').result()][0]
-
-        logger.info("Row count before insert is: %s" % existing_count)
-
-        slices = len(entities)
-        remaining_entities = list(sliced(entities, slices))
-        notfound_retries = 3
-        done = False
-
-        while not done:
-            last_ix = len(remaining_entities) - 1
-            for ix, chunk in enumerate(remaining_entities):
-                try:
-                    errors = client.insert_rows_json(target_table, chunk)
-                    notfound_retries = 3
-                    if errors == []:
-                        logger.info(f'{len(chunk)} new rows have been added to table')
-                    else:
-                        raise AssertionError(f"Failed to insert json to temp table: {errors}")
-
-                    if ix == last_ix:
-                        done = True
-                except NotFound as e:
-                    notfound_retries -= 1
-                    if notfound_retries == 0:
-                        raise AssertionError("Got too many NotFound errors in a row, bailing out...")
-                    else:
-                        logger.info("Got a NotFound error, retrying...")
-                    time.sleep(5)
-                except GoogleAPICallError as ge:
-                    if ge.code == 413 and "Your client issued a request that was too large" in ge.message:
-                        # We need to split the entities into smaller chunks and try again
-                        logger.info("Current batch is too big, slicing it up...")
-
-                        # Gather and split the remaining entities one more level
-                        slices = int(len(chunk) / 2)
-                        tmp = []
-                        for c in remaining_entities[ix:]:
-                            tmp.extend(c)
-
-                        remaining_entities = list(sliced(tmp, slices))
-                        logger.info("Trying with new batch size: %s for the %s "
-                                    "remaining entities" % (len(remaining_entities[0]), len(tmp)))
-                        # New loop
-                        break
-                    else:
-                        raise ge
-                except BaseException as e:
-                    logger.exception("insert_rows_json() failed for unknown reasons!")
-                    raise e
-
-        start_time = time.time()
-        while True:
-            # Loop until count includes the new entities
-            count = [item[0] for item in
-                     client.query(f'SELECT COUNT(*) FROM `{target_table}`').result()][0]
-            if (count - existing_count) == len(entities):
-                break
-
-            if time.time() - start_time > timeout:
-                raise AssertionError(f"Timed out while waiting for row count to increase to include "
-                                     f"the inserted entities, the last row count was {count} - expected "
-                                     f"{existing_count + len(entities)}")
-
-            time.sleep(5)
+        insert_entities_into_table(target_table, entities)
     else:
-        #If is_full is false, create a sepparate source table. The tables will be merged later.
+        # If is_full is false, create a sepparate source table. The tables will be merged later.
         source_table = target_table + '_temp'
 
         # Create target table and temp tables
         create_table(target_table, big_query_schema)
         create_table(source_table, big_query_schema, replace=True)
 
+        existing_count = [item[0] for item in
+                          client.query(f'SELECT COUNT(*) FROM `{target_table}`').result()][0]
+
+        logger.info("Row count before merge to table '%s' is: %s" % (target_table, existing_count))
+
         # Upload test data to temp table
-        # Due to data being uploaded asynchronously, the program loops until upload is successful
-        timeout = 60
-        start_time = time.time()
-        while True:
-            try:
-                errors = client.insert_rows_json(source_table, entities)
-
-                if errors == []:
-                    logger.info('%s new rows have been added to table' % len(entities))
-                else:
-                    raise AssertionError(f"Failed to insert json to temp table: {errors}")
-
-                break
-            except NotFound as e:
-                if time.time() - start_time > timeout:
-                    raise e
-                time.sleep(5)
+        insert_entities_into_table(source_table, entities)
 
         # Create MERGE query
         # Make schema into array of strings
@@ -256,6 +262,11 @@ def insert_into_bigquery(entities, table_schema, is_full, is_first):
         # Perform query and await result
         query_job = client.query(merge_query)
         query_job.result()
+
+        existing_count = [item[0] for item in
+                          client.query(f'SELECT COUNT(*) FROM `{target_table}`').result()][0]
+
+        logger.info("Row count after merge to table '%s' is: %s" % (target_table, existing_count))
 
 
 @app.route('/', methods=['GET'])
