@@ -33,6 +33,7 @@ client = bigquery.Client()
 
 cast_columns = []
 
+
 def create_table(table_id, schema, replace=False):
     try:
         table = client.get_table(table_id)  # Make an API request.
@@ -45,14 +46,19 @@ def create_table(table_id, schema, replace=False):
         pass
 
     table_obj = bigquery.Table(table_id, schema=schema)
-    table = client.create_table(table_obj)
+    client.create_table(table_obj)
 
+    timeout = 60
+    start_time = time.time()
     while True:
         try:
-            _table = client.get_table(table_id)
-            return _table
+            table = client.get_table(table_id)
+            return table
         except NotFound:
-           pass
+            if time.time() - start_time > timeout:
+                msg = f"Timed out while waiting for the table '{table_id}' to exist"
+                logger.error(msg)
+                raise AssertionError(msg)
 
 
 def generate_schema(entity_schema):
@@ -78,6 +84,7 @@ def generate_schema(entity_schema):
                 cast_columns.append(key)
 
     return schema
+
 
 app = Flask(__name__)
 
@@ -127,7 +134,7 @@ def insert_entities_into_table(table, entities):
             try:
                 errors = client.insert_rows_json(table, chunk)
                 notfound_retries = 3
-                if errors == []:
+                if not errors:
                     logger.info(f"{len(chunk)} new rows have been added to table '%s'" % table)
                 else:
                     raise AssertionError(f"Failed to insert json for table '%s':  %s" % (table, errors))
@@ -194,7 +201,7 @@ def insert_entities_into_table(table, entities):
 
 
 def insert_into_bigquery(entities, table_schema, is_full, is_first):
-    #Remove _ts and _hash
+    # Remove _ts and _hash
     for entity in entities:
         entity.pop("_ts", None)
         entity.pop("_hash", None)
