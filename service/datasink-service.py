@@ -6,6 +6,9 @@ import json
 import time
 import os
 import logging
+import threading
+from queue import Queue, Empty
+from concurrent.futures import ThreadPoolExecutor
 import paste.translogger
 from werkzeug.exceptions import NotFound, InternalServerError, BadRequest
 from google.cloud import bigquery
@@ -94,6 +97,7 @@ jwt_token = os.environ.get("JWT_TOKEN")
 node_url = os.environ.get("NODE_URL")
 pipe_id = os.environ.get("PIPE_ID")
 target_table = os.environ.get("TARGET_TABLE")
+use_multithreaded = os.environ.get("MULTITHREADED", False) in ["1", 1, "true", "True"]
 
 node_connection = sesamclient.Connection(node_url, jwt_auth_token=jwt_token)
 
@@ -111,17 +115,66 @@ entity_schema["properties"].update(default_properties)
 
 big_query_schema = generate_schema(entity_schema)
 
-from pprint import pprint
-pprint(entity_schema, indent=2)
+#from pprint import pprint
+#pprint(entity_schema, indent=2)
 
 rows_seen = 0
 
 
-def insert_entities_into_table(table, entities):
-    existing_count = [item[0] for item in
-                      client.query(f'SELECT COUNT(*) FROM `{table}`').result()][0]
+def count_rows_in_table(table, retries=0, timeout=None, prefix=''):
+    while True:
+        try:
+            logger.info("%scounting rows in table '%s'..." % (prefix, table))
+            query_job = client.query(f'SELECT COUNT(*) FROM `{table}`', timeout=timeout)
+            result = query_job.result(timeout=timeout)
+            count = [item[0] for item in result][0]
+            logger.info("%sRow count for table '%s' is: %s" % (prefix, table, count))
+            return count
+        except BaseException as e:
+            retries -= 1
 
-    logger.info("Row count before insert into table '%s' is: %s" % (table, existing_count))
+            msg = "%sFailed to get count from table '%s'" % (prefix, table)
+
+            if retries >= 0:
+                logger.warning("%s.. retrying" % msg)
+
+                time.sleep(1)
+            else:
+                raise RuntimeError(msg)
+
+
+def wait_for_rows_to_appear(entities, existing_count, table, timeout=60, prefix=''):
+    start_time = time.time()
+    while True:
+        # Loop until count includes the new entities
+        count = count_rows_in_table(table, retries=3, timeout=5, prefix=prefix)
+
+        if (count - existing_count) == len(entities):
+            logger.info("%sRow count for table '%s' after inserting all "
+                        "entities in batch is: %s" % (prefix, table, count))
+            break
+
+        logger.info(f"{prefix}The last row count for table '{table}' was {count} - "
+                    f"expected {existing_count + len(entities)} - retrying...")
+
+        if time.time() - start_time > timeout:
+            msg = f"{prefix}Timed out while waiting for row count for table '{table}' to increase to include " \
+                  f"the inserted entities, the last row count was {count} - expected {existing_count + len(entities)}"
+            logger.error(msg)
+            raise AssertionError(msg)
+
+        time.sleep(5)
+
+
+def insert_entities_into_table(table, entities, wait_for_rows=True, prefix=''):
+    existing_count = 0
+    if wait_for_rows:
+        try:
+            existing_count = count_rows_in_table(table, retries=3, timeout=5, prefix=prefix)
+        except BaseException as e:
+            logger.warning("%sFailed to get row count from table '%s" % (prefix, table))
+
+        logger.info("%sRow count before insert into table '%s' is: %s" % (prefix, table, existing_count))
 
     slices = len(entities)
     remaining_entities = list(sliced(entities, slices))
@@ -132,21 +185,24 @@ def insert_entities_into_table(table, entities):
         last_ix = len(remaining_entities) - 1
         for ix, chunk in enumerate(remaining_entities):
             try:
-                errors = client.insert_rows_json(table, chunk)
+                logger.info("%sInserting %s entities in table '%s'..." % (prefix, len(chunk), table))
+                row_ids = [e["_updated"] for e in chunk]
+                errors = client.insert_rows_json(table, chunk, row_ids=row_ids, timeout=30)
                 notfound_retries = 3
                 if not errors:
-                    logger.info(f"{len(chunk)} new rows have been added to table '%s'" % table)
+                    logger.info(f"{prefix}{len(chunk)} new rows have been added to table '%s'" % table)
                 else:
-                    raise AssertionError(f"Failed to insert json for table '%s':  %s" % (table, errors))
+                    raise AssertionError(f"{prefix}Failed to insert json for table '%s':  %s" % (table, errors))
 
                 if ix == last_ix:
                     done = True
             except NotFound as e:
                 notfound_retries -= 1
                 if notfound_retries == 0:
-                    raise AssertionError("Got too many NotFound errors in a row for table '%s', bailing out..." % table)
+                    raise AssertionError("%sGot too many NotFound errors in a row for table '%s', "
+                                         "bailing out..." % (prefix, table))
                 else:
-                    logger.info("Got a NotFound error for table '%s', retrying..." % table)
+                    logger.info("%sGot a NotFound error for table '%s', retrying..." % (prefix, table))
 
                 time.sleep(1)
 
@@ -158,7 +214,7 @@ def insert_entities_into_table(table, entities):
             except GoogleAPICallError as ge:
                 if ge.code == 413 and "Your client issued a request that was too large" in ge.message:
                     # We need to split the entities into smaller chunks and try again
-                    logger.info("Current batch is too big for table '%s', slicing it up..." % table)
+                    logger.info("%sCurrent batch is too big for table '%s', slicing it up..." % (prefix, table))
 
                     # Gather and split the remaining entities one more level
                     slices = int(len(chunk) / 2)
@@ -167,40 +223,100 @@ def insert_entities_into_table(table, entities):
                         tmp.extend(c)
 
                     remaining_entities = list(sliced(tmp, slices))
-                    logger.info("Trying with new batch size for table '%s': %s for the %s "
-                                "remaining entities" % (table, len(remaining_entities[0]), len(tmp)))
+                    logger.info("%sTrying with new batch size for table '%s': %s for the %s "
+                                "remaining entities" % (prefix, table, len(remaining_entities[0]), len(tmp)))
                     # New loop
                     break
                 else:
                     # Fail for any other errors
                     raise ge
             except BaseException as e:
-                logger.exception("insert_rows_json('%s') failed for unknown reasons!" % table)
+                logger.exception("%sinsert_rows_json('%s') failed for unknown reasons!" % (prefix, table))
                 raise e
 
-    timeout = 120
-    start_time = time.time()
+    if wait_for_rows:
+        logger.info("%sVerifying number of rows inserted into '%s'..." % (prefix, table))
+        wait_for_rows_to_appear(entities, existing_count, table, timeout=120, prefix=prefix)
+
+
+def insert_entities_into_table_mt(table, entities):
+    # Multithreaded version of the insert code
+    existing_count = count_rows_in_table(table, retries=3, timeout=30)
+    logger.info("Row count before insert into table '%s' is: %s" % (table, existing_count))
+
+    partition_size = 1000
+    workers = 50
+    queue = Queue()
+    futures = []
+
+    # Fill up the queue with entity partitions
+    for partition in sliced(entities, partition_size):
+        queue.put(partition)
+
+    running_threads = {}
+
+    def insert_partition(prefix):
+        while True:
+            try:
+                current_partition = queue.get(block=False)
+                if current_partition is None:
+                    return True
+            except Empty:
+                return True
+
+            try:
+                threading.current_thread().name = prefix
+
+                running_threads[prefix] = True
+
+                logger.info("%sinsert_partition(): inserting a partition of size "
+                            "%s to table '%s'" % (prefix, len(current_partition), table))
+
+                insert_entities_into_table(table, current_partition, wait_for_rows=False, prefix=prefix)
+
+                logger.info("%sDone, terminating.." % prefix)
+                queue.task_done()
+
+                running_threads.pop(prefix)
+            except BaseException as e:
+                logger.exception("%sInsert failed! Terminating.." % prefix)
+                raise e
+
+    starttime = time.time()
+    executor = ThreadPoolExecutor(max_workers=workers)
+    for i in range(workers):
+        futures.append(executor.submit(insert_partition, prefix="Thread %s: " % i))
+
+    # Wait until all futures have either run successfully or failed
+    failed = False
     while True:
-        # Loop until count includes the new entities
-        count = [item[0] for item in
-                 client.query(f'SELECT COUNT(*) FROM `{table}`').result()][0]
-        if (count - existing_count) == len(entities):
-            logger.info("Row count for table '%s' after inserting all entities in batch is: %s" % (table, count))
+        if not futures:
             break
 
-        logger.info(f"The last row count for table '{table}' was {count} - "
-                    f"expected {existing_count + len(entities)} - retrying...")
+        for future in futures[:]:
+            if future.done():
+                exc = future.exception()
+                if exc is not None:
+                    failed = True
+                    logger.error(str(exc))
+                futures.remove(future)
 
-        if time.time() - start_time > timeout:
-            msg = f"Timed out while waiting for row count for table '{table}' to increase to include " \
-                  f"the inserted entities, the last row count was {count} - expected {existing_count + len(entities)}"
-            logger.error(msg)
-            raise AssertionError(msg)
+        logger.info("Still waiting for %s threads to finish" % len(futures))
+        time.sleep(2)
 
-        time.sleep(5)
+    if not failed:
+        # All futures completed successfully, wait until all the rows have appeared
+        logger.info("Verifying row count for target table '%s'.." % table)
+        wait_for_rows_to_appear(entities, existing_count, table, timeout=120)
+        elapsed_time = time.time() - starttime
+        num_entities = len(entities)
+        logger.info("Finished inserting %s rows in %s secs (%1f rows/sec)" % (num_entities, elapsed_time,
+                                                                              num_entities/elapsed_time))
+    else:
+        raise AssertionError("One or more threads failed to insert their partition, see the service log for details")
 
 
-def insert_into_bigquery(entities, table_schema, is_full, is_first):
+def insert_into_bigquery(entities, table_schema, is_full, is_first, multithreaded=False):
     # Remove _ts and _hash
     for entity in entities:
         entity.pop("_ts", None)
@@ -221,8 +337,10 @@ def insert_into_bigquery(entities, table_schema, is_full, is_first):
             create_table(target_table, big_query_schema, replace=True)
 
         # Upload test data to target_table
-        # Due to data being uploaded asynchronously, the program loops until upload is successful
-        insert_entities_into_table(target_table, entities)
+        if multithreaded:
+            insert_entities_into_table_mt(target_table, entities)
+        else:
+            insert_entities_into_table(target_table, entities)
     else:
         # If is_full is false, create a sepparate source table. The tables will be merged later.
         source_table = target_table + '_temp'
@@ -237,7 +355,10 @@ def insert_into_bigquery(entities, table_schema, is_full, is_first):
         logger.info("Row count before merge to table '%s' is: %s" % (target_table, existing_count))
 
         # Upload test data to temp table
-        insert_entities_into_table(source_table, entities)
+        if multithreaded:
+            insert_entities_into_table_mt(source_table, entities)
+        else:
+            insert_entities_into_table(source_table, entities)
 
         # Create MERGE query
         # Make schema into array of strings
@@ -299,7 +420,7 @@ def receiver():
 
     try:
         if len(entities) > 0:
-            insert_into_bigquery(entities, big_query_schema, is_full, is_first)
+            insert_into_bigquery(entities, big_query_schema, is_full, is_first, multithreaded=use_multithreaded)
 
         if is_first:
             rows_seen = len(entities)
@@ -332,6 +453,11 @@ if __name__ == '__main__':
 
     logger.propagate = False
     logger.setLevel(logging.INFO)
+
+    if use_multithreaded:
+        logger.info("Running in multithreaded mode")
+    else:
+        logger.info("Running in single threaded mode")
 
     cherrypy.tree.graft(app, '/')
 
