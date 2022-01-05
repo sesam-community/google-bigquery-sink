@@ -14,7 +14,7 @@ from werkzeug.exceptions import NotFound, InternalServerError, BadRequest
 from google.cloud import bigquery
 from google.cloud.exceptions import NotFound
 from google.api_core.exceptions import GoogleAPICallError
-
+from decimal import Decimal
 
 if 'GOOGLE_APPLICATION_CREDENTIALS' not in os.environ:
     # Local dev env for mikkel
@@ -69,9 +69,15 @@ def generate_schema(entity_schema):
     for key, value in entity_schema["properties"].items():
             if "anyOf" in value:
                 field_types = [v for v in value["anyOf"] if v["type"] != "null"]
-                field_type = field_types[0]["type"]
+                if "subtype" not in field_types[0]:
+                    field_type = field_types[0]["type"]
+                else:
+                    field_type = field_types[0]["subtype"]
             else:
-                field_type = value["type"]
+                if "subtype" not in value:
+                    field_type = value["type"]
+                else:
+                    field_type = value["subtype"]
 
             # TODO: extend to other possible types in the entity schema from Sesam
             if field_type == "integer":
@@ -82,9 +88,17 @@ def generate_schema(entity_schema):
                 schema.append(bigquery.SchemaField(key, "STRING"))
             elif field_type == 'integer':
                 schema.append(bigquery.SchemaField(key, "INTEGER"))
-            elif field_type in ['object', 'array']:
+            elif field_type == "decimal":
+                schema.append(bigquery.SchemaField(key, "BIGNUMERIC"))
+                cast_columns.append(key)
+            elif field_type == "nanoseconds":
+                schema.append(bigquery.SchemaField(key, "DATETIME"))
+                cast_columns.append(key)
+            elif field_type in ['object', 'array', 'bytes', 'bytes', 'uuid', 'uri', 'ni']:
                 schema.append(bigquery.SchemaField(key, "STRING"))
                 cast_columns.append(key)
+            else:
+                logger.warning("Unknown field type '%s' - defaulting to 'STRING'" % field_type)
 
     return schema
 
@@ -328,7 +342,23 @@ def insert_into_bigquery(entities, table_schema, is_full, is_first, multithreade
             for key in cast_columns:
                 value = entity.get(key)
                 if value is not None:
-                    entity[key] = json.dumps(value)
+                    if not isinstance(value, (list, dict)):
+                        # Check if we need to transit decode this value
+                        if isinstance(value, str) and len(value) > 1 and value[0] == "~":
+                            prefix = value[:2]
+                            if prefix in ["~r", "~u", "~:", "~b", "~t"]:
+                                # URI, NI, UUID, bytes, Nanosecond: just cast it to string without the prefix
+                                value = value[len(prefix):]
+                            elif prefix in ["~d", "~f"]:
+                                # Float or decimal
+                                value = float(Decimal(value[len(prefix):]))
+                            else:
+                                # Unknown type, strip the prefix off
+                                value = value[len(prefix):]
+
+                            entity[key] = value
+                    else:
+                        entity[key] = json.dumps(value)
 
     # Check for is_full
     if is_full:
