@@ -4,6 +4,7 @@ import cherrypy
 from more_itertools import sliced, chunked, collapse
 import json
 import time
+from datetime import datetime, timezone, timedelta
 import os
 import logging
 import threading
@@ -15,6 +16,8 @@ from google.cloud import bigquery
 from google.cloud.exceptions import NotFound
 from google.api_core.exceptions import GoogleAPICallError
 from decimal import Decimal
+
+EPOCH = datetime.utcfromtimestamp(0)  # NOTE: this is a datetime with tzinfo=None
 
 if 'GOOGLE_APPLICATION_CREDENTIALS' not in os.environ:
     # Local dev env for mikkel
@@ -37,25 +40,74 @@ client = bigquery.Client()
 cast_columns = []
 
 
+def datetime_as_int(dt):
+    # convert to naive UTC datetime
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc)  # NOTE: same as dt = dt - dt.utcoffset()
+        dt = dt.replace(tzinfo=None)
+
+    time_delta = dt - EPOCH
+
+    r = int(time_delta.total_seconds()) * 1000000000
+    t = time_delta.microseconds * 1000
+
+    if time_delta.days < 0 < t:
+        t = -1000000000 + t
+
+    return r + t
+
+
+def datetime_parse(dt_str):
+    # Parse a "nanoseconds" timestamp to int - it has up to 9 digits fractional seconds
+    dt = datetime.strptime(dt_str[:19], "%Y-%m-%dT%H:%M:%S")  # len('2015-11-24T07:58:53') == 19
+    dt_str_digits = dt_str[19+1:-1]  # get number between . and Z
+    dt_str_nanos = dt_str_digits.ljust(9, "0")
+    return datetime_as_int(dt) + int(dt_str_nanos)
+
+
+MIN_NANOS = datetime_parse("0001-01-01T00:00:00Z")
+MAX_NANOS = datetime_parse("9999-12-31T23:59:59Z")
+
+
+def datetime_format(dt_int):
+    # Format a "nanoseconds" int to ISO format compatible with BQ (max 6 digit fractional seconds, aka microseconds)
+    if MIN_NANOS <= dt_int <= MAX_NANOS:
+        seconds = (dt_int//1000000000)
+        nanoseconds = dt_int-(dt_int//1000000000)*1000000000
+        microseconds_str = ("%06d" % nanoseconds).rstrip("0")
+        dt = datetime.utcfromtimestamp(seconds)
+        if len(microseconds_str) > 0:
+            return '%04d' % dt.year + dt.strftime("-%m-%dT%H:%M:%S") + "." + microseconds_str + "Z"
+        else:
+            return '%04d' % dt.year + dt.strftime("-%m-%dT%H:%M:%SZ")
+    else:
+        raise ValueError("Integer %d is outside of valid datetime range" % (dt_int,))
+
+
 def create_table(table_id, schema, replace=False):
     try:
         table = client.get_table(table_id)  # Make an API request.
         if replace:
             # Drop the table
+            logger.info("Dropping table '%s'..." % table_id)
             client.delete_table(table_id)
         else:
             return table
     except NotFound:
+        logger.info("Table '%s' didn't already exist" % table_id)
         pass
 
     table_obj = bigquery.Table(table_id, schema=schema)
+    logger.info("Creating table '%s'..." % table_id)
     client.create_table(table_obj)
 
     timeout = 60
     start_time = time.time()
+    logger.info("Waiting for table '%s' to appear..." % table_id)
     while True:
         try:
             table = client.get_table(table_id)
+            logger.info("Table '%s' has appeared! Moving on.." % table_id)
             return table
         except NotFound:
             if time.time() - start_time > timeout:
@@ -330,7 +382,7 @@ def insert_entities_into_table_mt(table, entities):
         raise AssertionError("One or more threads failed to insert their partition, see the service log for details")
 
 
-def insert_into_bigquery(entities, table_schema, is_full, is_first, multithreaded=False):
+def insert_into_bigquery(entities, table_schema, is_full, is_first, request_id, sequence_id, multithreaded=False):
     # Remove _ts and _hash
     for entity in entities:
         entity.pop("_ts", None)
@@ -346,12 +398,17 @@ def insert_into_bigquery(entities, table_schema, is_full, is_first, multithreade
                         # Check if we need to transit decode this value
                         if isinstance(value, str) and len(value) > 1 and value[0] == "~":
                             prefix = value[:2]
-                            if prefix in ["~r", "~u", "~:", "~b", "~t"]:
+                            if prefix in ["~r", "~u", "~:", "~b"]:
                                 # URI, NI, UUID, bytes, Nanosecond: just cast it to string without the prefix
                                 value = value[len(prefix):]
                             elif prefix in ["~d", "~f"]:
                                 # Float or decimal
                                 value = float(Decimal(value[len(prefix):]))
+                            elif prefix == "̃~t":
+                                # Truncate nanoseconds to microseconds to be compatible with BQ
+                                value = value[len(prefix):]
+                                dt_int = datetime_parse(value)
+                                value = datetime_format(dt_int)
                             else:
                                 # Unknown type, strip the prefix off
                                 value = value[len(prefix):]
@@ -366,65 +423,79 @@ def insert_into_bigquery(entities, table_schema, is_full, is_first, multithreade
             # Create target table
             create_table(target_table, big_query_schema, replace=True)
 
-        # Upload test data to target_table
-        if multithreaded:
-            insert_entities_into_table_mt(target_table, entities)
-        else:
-            insert_entities_into_table(target_table, entities)
-    else:
-        # If is_full is false, create a sepparate source table. The tables will be merged later.
-        source_table = target_table + '_temp'
+# Commented out for now, always upload via a temptable to avoid lost data and other async weirdness
+#        # Upload test data to target_table
+#        if multithreaded:
+#            insert_entities_into_table_mt(target_table, entities)
+#        else:
+#            insert_entities_into_table(target_table, entities)
+#    else:
 
-        # Create target table and temp tables
-        create_table(target_table, big_query_schema)
-        create_table(source_table, big_query_schema, replace=True)
+        # Create a separate source table. The tables will be merged later.
+        source_table = target_table + '_%s_%s_temp' % (sequence_id.replace("-", ""), request_id)
 
-        existing_count = [item[0] for item in
-                          client.query(f'SELECT COUNT(*) FROM `{target_table}`').result()][0]
+        # Create target table
+        create_table(target_table, big_query_schema, replace=(is_full and is_first))
 
-        logger.info("Row count before merge to table '%s' is: %s" % (target_table, existing_count))
+        try:
+            # Create temp table
+            create_table(source_table, big_query_schema, replace=True)
 
-        # Upload test data to temp table
-        if multithreaded:
-            insert_entities_into_table_mt(source_table, entities)
-        else:
-            insert_entities_into_table(source_table, entities)
+            existing_count = [item[0] for item in
+                              client.query(f'SELECT COUNT(*) FROM `{target_table}`').result()][0]
 
-        # Create MERGE query
-        # Make schema into array of strings
-        schema_arr = []
-        for ele in table_schema:
-            schema_arr.append(ele.name)
+            logger.info("Row count before merge to table '%s' was: %s" % (target_table, existing_count))
 
-        # Merge temp table and target table
-        merge_query = f"""
-        MERGE {target_table} T
-        USING
-        (SELECT {", ".join(["t." + ele.name for ele in table_schema])}
-        FROM (
-        SELECT _id, MAX(_updated) AS _updated
-        FROM {source_table}
-        GROUP BY _id
-        )AS i JOIN {source_table} AS t ON t._id = i._id AND t._updated = i._updated) S
-        ON T._id = S._id
-        WHEN MATCHED AND S._deleted = true THEN
-            DELETE
-        WHEN NOT MATCHED AND (S._deleted IS NULL OR S._deleted = false) THEN
-            INSERT ({", ".join(schema_arr)})
-            VALUES ({", ".join(["S." + ele.name for ele in table_schema])})
-        WHEN MATCHED AND (S._deleted IS NULL OR S._deleted = false) THEN
-            UPDATE
-            SET {", ".join([ele.name + " = S." + ele.name for ele in table_schema])};
-        """
+            # Upload test data to temp table
+            if multithreaded:
+                insert_entities_into_table_mt(source_table, entities)
+            else:
+                insert_entities_into_table(source_table, entities)
 
-        # Perform query and await result
-        query_job = client.query(merge_query)
-        query_job.result()
+            # Create MERGE query
+            # Make schema into array of strings
+            schema_arr = []
+            for ele in table_schema:
+                schema_arr.append(ele.name)
 
-        existing_count = [item[0] for item in
-                          client.query(f'SELECT COUNT(*) FROM `{target_table}`').result()][0]
+            # Merge temp table and target table
+            merge_query = f"""
+            MERGE {target_table} T
+            USING
+            (SELECT {", ".join(["t." + ele.name for ele in table_schema])}
+            FROM (
+            SELECT _id, MAX(_updated) AS _updated
+            FROM {source_table}
+            GROUP BY _id
+            )AS i JOIN {source_table} AS t ON t._id = i._id AND t._updated = i._updated) S
+            ON T._id = S._id
+            WHEN MATCHED AND S._deleted = true THEN
+                DELETE
+            WHEN NOT MATCHED AND (S._deleted IS NULL OR S._deleted = false) THEN
+                INSERT ({", ".join(schema_arr)})
+                VALUES ({", ".join(["S." + ele.name for ele in table_schema])})
+            WHEN MATCHED AND (S._deleted IS NULL OR S._deleted = false) THEN
+                UPDATE
+                SET {", ".join([ele.name + " = S." + ele.name for ele in table_schema])};
+            """
 
-        logger.info("Row count after merge to table '%s' is: %s" % (target_table, existing_count))
+            # Perform query and await result
+            query_job = client.query(merge_query)
+            query_job.result()
+
+            existing_count = [item[0] for item in
+                              client.query(f'SELECT COUNT(*) FROM `{target_table}`').result()][0]
+
+            logger.info("Row count after merge to table '%s' is: %s" % (target_table, existing_count))
+        except BaseException as e:
+            logger.exception("Failed to process batch")
+            raise e
+        finally:
+            try:
+                logger.info("Deleting temp table '%s'" % source_table)
+                client.delete_table(source_table)
+            except BaseException as e:
+                logger.exception("Failed to drop temp table '%s'" % source_table)
 
 
 @app.route('/', methods=['GET'])
@@ -448,9 +519,13 @@ def receiver():
     is_last = request.args.get('is_last', "false")
     is_last = (is_last.lower() == "true" and True) or False
 
+    sequence_id = request.args.get('sequence_id', 0)
+    request_id = request.args.get('request_id', 0)
+
     try:
         if len(entities) > 0:
-            insert_into_bigquery(entities, big_query_schema, is_full, is_first, multithreaded=use_multithreaded)
+            insert_into_bigquery(entities, big_query_schema, is_full, is_first, request_id, sequence_id,
+                                 multithreaded=use_multithreaded)
 
         if is_first:
             rows_seen = len(entities)
