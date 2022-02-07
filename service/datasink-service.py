@@ -263,7 +263,7 @@ def insert_entities_into_table(table, entities, wait_for_rows=True, prefix=''):
                     logger.info(f"{prefix}{len(chunk)} new rows have been added to table '%s'" % table)
                 else:
                     from pprint import pprint
-                    logger.error("Example entity:\n%s" % pprint(entities[0]))
+                    logger.error("Example entity:\n%s" % pprint(chunk[0]))
                     raise AssertionError(f"{prefix}Failed to insert json for table '%s':  %s" % (table, errors))
 
                 if ix == last_ix:
@@ -535,6 +535,10 @@ def receiver():
 
     sequence_id = request.args.get('sequence_id', 0)
     request_id = request.args.get('request_id', 0)
+
+    if is_full:
+        # Skip deleted entities if this is a full run
+        entities = [e for e in entities if e.get("_deleted", False) is False]
 
     try:
         if len(entities) > 0:
