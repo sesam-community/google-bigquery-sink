@@ -45,6 +45,6 @@ RUN curl --fail -sSL https://bootstrap.pypa.io/get-pip.py | python3 && python3 -
 COPY ./service /service
 WORKDIR /service
 RUN pip install -r requirements.txt
-EXPOSE 5000/tcp
+EXPOSE 5001/tcp
 ENTRYPOINT ["python3"]
 CMD ["datasink-service.py"]
