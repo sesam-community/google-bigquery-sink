@@ -118,41 +118,45 @@ def create_table(table_id, schema, replace=False):
 
 def generate_schema(entity_schema):
     schema = []
+    translation = {}
     for key, value in entity_schema["properties"].items():
-            if "anyOf" in value:
-                field_types = [v for v in value["anyOf"] if v["type"] != "null"]
-                if "subtype" not in field_types[0]:
-                    field_type = field_types[0]["type"]
-                else:
-                    field_type = field_types[0]["subtype"]
-            else:
-                if "subtype" not in value:
-                    field_type = value["type"]
-                else:
-                    field_type = value["subtype"]
+        translated_key = key.replace("$", "_").replace("-", "_").replace(":", "__")
+        translation[key] = translated_key
 
-            # TODO: extend to other possible types in the entity schema from Sesam
-            if field_type == "integer":
-                schema.append(bigquery.SchemaField(key, "INTEGER"))
-            elif field_type == 'boolean':
-                schema.append(bigquery.SchemaField(key, "BOOLEAN"))
-            elif field_type == 'string':
-                schema.append(bigquery.SchemaField(key, "STRING"))
-            elif field_type == 'integer':
-                schema.append(bigquery.SchemaField(key, "INTEGER"))
-            elif field_type == "decimal":
-                schema.append(bigquery.SchemaField(key, "BIGNUMERIC"))
-                cast_columns.append(key)
-            elif field_type == "nanoseconds":
-                schema.append(bigquery.SchemaField(key, "DATETIME"))
-                cast_columns.append(key)
-            elif field_type in ['object', 'array', 'bytes', 'bytes', 'uuid', 'uri', 'ni']:
-                schema.append(bigquery.SchemaField(key, "STRING"))
-                cast_columns.append(key)
+        if "anyOf" in value:
+            field_types = [v for v in value["anyOf"] if v["type"] != "null"]
+            if "subtype" not in field_types[0]:
+                field_type = field_types[0]["type"]
             else:
-                logger.warning("Unknown field type '%s' - defaulting to 'STRING'" % field_type)
+                field_type = field_types[0]["subtype"]
+        else:
+            if "subtype" not in value:
+                field_type = value["type"]
+            else:
+                field_type = value["subtype"]
 
-    return schema
+        # TODO: extend to other possible types in the entity schema from Sesam
+        if field_type == "integer":
+            schema.append(bigquery.SchemaField(translated_key, "INTEGER"))
+        elif field_type == 'boolean':
+            schema.append(bigquery.SchemaField(translated_key, "BOOLEAN"))
+        elif field_type == 'string':
+            schema.append(bigquery.SchemaField(translated_key, "STRING"))
+        elif field_type == 'integer':
+            schema.append(bigquery.SchemaField(translated_key, "INTEGER"))
+        elif field_type == "decimal":
+            schema.append(bigquery.SchemaField(translated_key, "BIGNUMERIC"))
+            cast_columns.append(translated_key)
+        elif field_type == "nanoseconds":
+            schema.append(bigquery.SchemaField(translated_key, "DATETIME"))
+            cast_columns.append(translated_key)
+        elif field_type in ['object', 'array', 'bytes', 'bytes', 'uuid', 'uri', 'ni']:
+            schema.append(bigquery.SchemaField(translated_key, "STRING"))
+            cast_columns.append(translated_key)
+        else:
+            logger.warning("Unknown field type '%s' - defaulting to 'STRING'" % field_type)
+
+    return schema, translation
 
 
 app = Flask(__name__)
@@ -179,7 +183,7 @@ default_properties = {
 
 entity_schema["properties"].update(default_properties)
 
-big_query_schema = generate_schema(entity_schema)
+big_query_schema, property_column_translation = generate_schema(entity_schema)
 
 #from pprint import pprint
 #pprint(entity_schema, indent=2)
@@ -389,11 +393,12 @@ def insert_into_bigquery(entities, table_schema, is_full, is_first, request_id, 
         entity.pop("_hash", None)
 
     if cast_columns:
-        # Cast any arrays and objects to string
         for entity in entities:
-            for key in cast_columns:
+            for key in property_column_translation:
+                # Translate properties->columns
                 value = entity.get(key)
-                if value is not None:
+                translated_key = property_column_translation.get(key, key)
+                if value is not None and key in cast_columns:
                     if not isinstance(value, (list, dict)):
                         # Check if we need to transit decode this value
                         if isinstance(value, str) and len(value) > 1 and value[0] == "~":
@@ -412,10 +417,14 @@ def insert_into_bigquery(entities, table_schema, is_full, is_first, request_id, 
                             else:
                                 # Unknown type, strip the prefix off
                                 value = value[len(prefix):]
-
-                            entity[key] = value
                     else:
-                        entity[key] = json.dumps(value)
+                        # Cast any arrays and objects values to string
+                        value = json.dumps(value)
+
+                if translated_key != key:
+                    entity.pop(key, None)
+
+                entity[translated_key] = value
 
     # Check for is_full
     if is_full:
