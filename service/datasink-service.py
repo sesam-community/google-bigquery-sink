@@ -262,6 +262,8 @@ def insert_entities_into_table(table, entities, wait_for_rows=True, prefix=''):
                 if not errors:
                     logger.info(f"{prefix}{len(chunk)} new rows have been added to table '%s'" % table)
                 else:
+                    from pprint import pprint
+                    logger.error("Example entity:\n%s" % pprint(entities[0]))
                     raise AssertionError(f"{prefix}Failed to insert json for table '%s':  %s" % (table, errors))
 
                 if ix == last_ix:
