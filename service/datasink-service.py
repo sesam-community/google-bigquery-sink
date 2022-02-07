@@ -396,6 +396,9 @@ def insert_into_bigquery(entities, table_schema, is_full, is_first, request_id, 
         for entity in entities:
             for key in property_column_translation:
                 # Translate properties->columns
+                if key not in entity:
+                    continue
+
                 value = entity.get(key)
                 translated_key = property_column_translation.get(key, key)
                 if value is not None and key in cast_columns:
