@@ -479,7 +479,7 @@ def insert_into_bigquery(entities, table_schema, is_full, is_first, request_id, 
             # Make schema into array of strings
             schema_arr = []
             for ele in table_schema:
-                schema_arr.append(ele.name)
+                schema_arr.append("`" + ele.name + "`")
 
             # Merge temp table and target table
             merge_query = f"""
@@ -499,7 +499,7 @@ def insert_into_bigquery(entities, table_schema, is_full, is_first, request_id, 
                 VALUES ({", ".join(["S." + ele.name for ele in table_schema])})
             WHEN MATCHED AND (S._deleted IS NULL OR S._deleted = false) THEN
                 UPDATE
-                SET {", ".join([ele.name + " = S." + ele.name for ele in table_schema])};
+                SET {", ".join(["`" + ele.name  + "` = S." + ele.name for ele in table_schema])};
             """
 
             # Perform query and await result
