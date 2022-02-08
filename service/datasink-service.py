@@ -77,9 +77,9 @@ def datetime_format(dt_int):
         microseconds_str = ("%06d" % nanoseconds).rstrip("0")
         dt = datetime.utcfromtimestamp(seconds)
         if len(microseconds_str) > 0:
-            return '%04d' % dt.year + dt.strftime("-%m-%dT%H:%M:%S") + "." + microseconds_str + "Z"
+            return '%04d' % dt.year + dt.strftime("-%m-%dT%H:%M:%S UTC") + "." + microseconds_str
         else:
-            return '%04d' % dt.year + dt.strftime("-%m-%dT%H:%M:%SZ")
+            return '%04d' % dt.year + dt.strftime("-%m-%dT%H:%M:%S UTC")
     else:
         raise ValueError("Integer %d is outside of valid datetime range" % (dt_int,))
 
@@ -153,7 +153,7 @@ def generate_schema(entity_schema):
             schema.append(bigquery.SchemaField(translated_key, "BIGNUMERIC"))
             cast_columns.append(translated_key)
         elif field_type == "nanoseconds":
-            schema.append(bigquery.SchemaField(translated_key, "DATETIME"))
+            schema.append(bigquery.SchemaField(translated_key, "TIMESTAMP"))
             cast_columns.append(translated_key)
         elif field_type in ['object', 'array', 'bytes', 'bytes', 'uuid', 'uri', 'ni']:
             schema.append(bigquery.SchemaField(translated_key, "STRING"))
