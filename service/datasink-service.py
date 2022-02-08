@@ -149,7 +149,7 @@ def generate_schema(entity_schema):
             schema.append(bigquery.SchemaField(translated_key, "STRING"))
         elif field_type == 'integer':
             schema.append(bigquery.SchemaField(translated_key, "INTEGER"))
-        elif field_type == "decimal":
+        elif field_type in ["decimal", "number"]:
             schema.append(bigquery.SchemaField(translated_key, "BIGNUMERIC"))
             cast_columns.append(translated_key)
         elif field_type == "nanoseconds":
@@ -160,6 +160,8 @@ def generate_schema(entity_schema):
             cast_columns.append(translated_key)
         else:
             logger.warning("Unknown field type '%s' - defaulting to 'STRING'" % field_type)
+            schema.append(bigquery.SchemaField(translated_key, "STRING"))
+            cast_columns.append(translated_key)
 
     return schema, translation
 
