@@ -125,10 +125,15 @@ def generate_schema(entity_schema):
 
         if "anyOf" in value:
             field_types = [v for v in value["anyOf"] if v["type"] != "null"]
-            if "subtype" not in field_types[0]:
-                field_type = field_types[0]["type"]
+            if len(field_types) > 1:
+                # More than one type in entity schema -> cast to string in sql schema
+                field_type = "string"
+                cast_columns.append(translated_key)
             else:
-                field_type = field_types[0]["subtype"]
+                if "subtype" not in field_types[0]:
+                    field_type = field_types[0]["type"]
+                else:
+                    field_type = field_types[0]["subtype"]
         else:
             if "subtype" not in value:
                 field_type = value["type"]
@@ -177,7 +182,6 @@ entity_schema = r.json()
 
 default_properties = {
     "_deleted": {"type": "boolean"},
-    "_previous": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
     "_updated": {"type": "integer"}
 }
 
@@ -393,6 +397,7 @@ def insert_into_bigquery(entities, table_schema, is_full, is_first, request_id, 
     for entity in entities:
         entity.pop("_ts", None)
         entity.pop("_hash", None)
+        entity.pop("_previous", None)
 
     if cast_columns:
         for entity in entities:
@@ -403,7 +408,7 @@ def insert_into_bigquery(entities, table_schema, is_full, is_first, request_id, 
 
                 value = entity.get(key)
                 translated_key = property_column_translation.get(key, key)
-                if value is not None and key in cast_columns:
+                if value is not None and translated_key in cast_columns:
                     if not isinstance(value, (list, dict)):
                         # Check if we need to transit decode this value
                         if isinstance(value, str) and len(value) > 1 and value[0] == "~":
@@ -422,6 +427,8 @@ def insert_into_bigquery(entities, table_schema, is_full, is_first, request_id, 
                             else:
                                 # Unknown type, strip the prefix off
                                 value = value[len(prefix):]
+
+                        value = str(value)
                     else:
                         # Cast any arrays and objects values to string
                         value = json.dumps(value)
