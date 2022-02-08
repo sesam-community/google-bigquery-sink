@@ -120,7 +120,7 @@ def generate_schema(entity_schema):
     schema = []
     translation = {}
     for key, value in entity_schema["properties"].items():
-        translated_key = key.replace("$", "_").replace("-", "_").replace(":", "__")
+        translated_key = key.replace("$", "_").replace("-", "_").replace(":", "__").replace(" ", "_")
         translation[key] = translated_key
 
         if "anyOf" in value:
