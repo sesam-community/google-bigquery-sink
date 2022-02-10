@@ -117,10 +117,30 @@ def create_table(table_id, schema, replace=False):
 
 
 def generate_schema(entity_schema):
-    schema = []
+    global cast_columns
+    schema = {}
     translation = {}
+    seen_field_types = {}
     for key, value in entity_schema["properties"].items():
-        translated_key = key.replace("$", "_").replace("-", "_").replace(":", "__").replace(" ", "_")
+        translated_key = key.lower().replace(":", "__")
+
+        s = ""
+        for c in translated_key:
+            if ord(c) > 127:
+                if c == "å":
+                    s += "a"
+                elif c == "æ":
+                    s += "a"
+                elif c == "ø":
+                    s += "o"
+                else:
+                    s += "_"
+            elif not (c.isalpha() or c.isdigit()):
+                s += "_"
+            else:
+                s += c
+
+        translated_key = s
         translation[key] = translated_key
 
         if "anyOf" in value:
@@ -140,30 +160,51 @@ def generate_schema(entity_schema):
             else:
                 field_type = value["subtype"]
 
+        if translated_key in schema:
+            # We've seen this column already, so it exists in multiple cases probably. Check the type and decide
+            # what to do
+            if field_type == seen_field_types[translated_key]:
+                # Same type so just skip it
+                continue
+            else:
+                # Different type; we need to cast it to string
+                schema.pop(translated_key)
+                seen_field_types.pop(translated_key)
+                field_type = "string"
+                cast_columns.append(translated_key)
+
         # TODO: extend to other possible types in the entity schema from Sesam
         if field_type == "integer":
-            schema.append(bigquery.SchemaField(translated_key, "INTEGER"))
+            bigquery_type = bigquery.SchemaField(translated_key, "INTEGER")
         elif field_type == 'boolean':
-            schema.append(bigquery.SchemaField(translated_key, "BOOLEAN"))
+            bigquery_type = bigquery.SchemaField(translated_key, "BOOLEAN")
         elif field_type == 'string':
-            schema.append(bigquery.SchemaField(translated_key, "STRING"))
+            bigquery_type = bigquery.SchemaField(translated_key, "STRING")
         elif field_type == 'integer':
-            schema.append(bigquery.SchemaField(translated_key, "INTEGER"))
-        elif field_type in ["decimal", "number"]:
-            schema.append(bigquery.SchemaField(translated_key, "BIGNUMERIC"))
+            bigquery_type = bigquery.SchemaField(translated_key, "INTEGER")
+        elif field_type == "decimal":
+            bigquery_type = bigquery.SchemaField(translated_key, "BIGNUMERIC")
+            cast_columns.append(translated_key)
+        elif field_type == "number":
+            bigquery_type = bigquery.SchemaField(translated_key, "BIGNUMERIC")
             cast_columns.append(translated_key)
         elif field_type == "nanoseconds":
-            schema.append(bigquery.SchemaField(translated_key, "TIMESTAMP"))
+            bigquery_type = bigquery.SchemaField(translated_key, "TIMESTAMP")
             cast_columns.append(translated_key)
         elif field_type in ['object', 'array', 'bytes', 'bytes', 'uuid', 'uri', 'ni']:
-            schema.append(bigquery.SchemaField(translated_key, "STRING"))
+            bigquery_type = bigquery.SchemaField(translated_key, "STRING")
             cast_columns.append(translated_key)
         else:
             logger.warning("Unknown field type '%s' - defaulting to 'STRING'" % field_type)
-            schema.append(bigquery.SchemaField(translated_key, "STRING"))
+            bigquery_type = bigquery.SchemaField(translated_key, "STRING")
             cast_columns.append(translated_key)
 
-    return schema, translation
+        schema[translated_key] = bigquery_type
+        seen_field_types[translated_key] = field_type
+
+    cast_columns = sorted(list(set(cast_columns)))
+
+    return schema.values(), translation
 
 
 app = Flask(__name__)
@@ -483,14 +524,14 @@ def insert_into_bigquery(entities, table_schema, is_full, is_first, request_id, 
 
             # Merge temp table and target table
             merge_query = f"""
-            MERGE {target_table} T
+            MERGE `{target_table}` T
             USING
             (SELECT {", ".join(["t." + ele.name for ele in table_schema])}
             FROM (
             SELECT _id, MAX(_updated) AS _updated
-            FROM {source_table}
+            FROM `{source_table}`
             GROUP BY _id
-            )AS i JOIN {source_table} AS t ON t._id = i._id AND t._updated = i._updated) S
+            )AS i JOIN `{source_table}` AS t ON t._id = i._id AND t._updated = i._updated) S
             ON T._id = S._id
             WHEN MATCHED AND S._deleted = true THEN
                 DELETE
