@@ -49,8 +49,8 @@ use_multithreaded = os.environ.get("MULTITHREADED", False) in ["1", 1, "true", "
 
 node_connection = sesamclient.Connection(node_url, jwt_auth_token=jwt_token)
 
-cast_columns = entity_schema = big_query_schema = property_column_translation = None
-rows_seen = 0
+schema_cache = {}
+
 
 def datetime_as_int(dt):
     # convert to naive UTC datetime
@@ -128,125 +128,130 @@ def create_table(table_id, schema, replace=False):
                 raise AssertionError(msg)
 
 
-def generate_schema(entity_schema):
-    global cast_columns
-    schema = {}
-    translation = {}
+class SchemaInfo:
+    entity_schema = {}
+    bigquery_schema = {}
+    property_column_translation = {}
+    cast_columns = {}
+    rows_seen = 0
     seen_field_types = {}
-    for key, value in entity_schema["properties"].items():
-        mode = "NULLABLE"
-        translated_key = key.lower().replace(":", "__")
+    pipe_id = None
 
-        s = ""
-        for c in translated_key:
-            if ord(c) > 127:
-                if c == "å":
-                    s += "a"
-                elif c == "æ":
-                    s += "a"
-                elif c == "ø":
-                    s += "o"
-                else:
+    def __init__(self, pipe_id):
+        self.pipe_id = pipe_id
+        self.pipe_schema_url = node_url + "/pipes/" + pipe_id + "/entity-types/sink"
+
+        self.default_properties = {
+            "_deleted": {"type": "boolean"},
+            "_updated": {"type": "integer"}
+        }
+
+        self.update_schema()
+
+    def update_schema(self):
+        r = node_connection.do_get_request(self.pipe_schema_url)
+        _entity_schema = r.json()
+        _entity_schema["properties"].update(self.default_properties)
+
+        _cast_columns = []
+        _bigquery_schema = {}
+        _property_column_translation = {}
+        _seen_field_types = {}
+
+        for key, value in _entity_schema["properties"].items():
+            mode = "NULLABLE"
+            translated_key = key.lower().replace(":", "__")
+
+            s = ""
+            for c in translated_key:
+                if ord(c) > 127:
+                    if c == "å":
+                        s += "a"
+                    elif c == "æ":
+                        s += "a"
+                    elif c == "ø":
+                        s += "o"
+                    else:
+                        s += "_"
+                elif not (c.isalpha() or c.isdigit()):
                     s += "_"
-            elif not (c.isalpha() or c.isdigit()):
-                s += "_"
-            else:
-                s += c
-
-        translated_key = s
-        translation[key] = translated_key
-
-        if "anyOf" in value:
-            field_types = [v for v in value["anyOf"] if v["type"] != "null"]
-            if len(field_types) > 1:
-                # More than one type in entity schema -> cast to string in sql schema
-                field_type = "string"
-                cast_columns.append(translated_key)
-            else:
-                if "subtype" not in field_types[0]:
-                    field_type = field_types[0]["type"]
                 else:
-                    field_type = field_types[0]["subtype"]
-        else:
-            if "type" in value and value["type"] == "array" and value["items"]["type"] != "anyOf":
-                # Array of single types -> mode:REPEATED, so the "real" data type resides in "items"
-                value = value["items"]
-                mode = "REPEATED"
+                    s += c
 
-            if "subtype" not in value:
-                field_type = value["type"]
+            translated_key = s
+            _property_column_translation[key] = translated_key
+
+            if "anyOf" in value:
+                field_types = [v for v in value["anyOf"] if v["type"] != "null"]
+                if len(field_types) > 1:
+                    # More than one type in entity schema -> cast to string in sql schema
+                    field_type = "string"
+                    _cast_columns.append(translated_key)
+                else:
+                    if "subtype" not in field_types[0]:
+                        field_type = field_types[0]["type"]
+                    else:
+                        field_type = field_types[0]["subtype"]
             else:
-                field_type = value["subtype"]
+                if "type" in value and value["type"] == "array" and value["items"]["type"] != "anyOf":
+                    # Array of single types -> mode:REPEATED, so the "real" data type resides in "items"
+                    value = value["items"]
+                    mode = "REPEATED"
 
-        if translated_key in schema:
-            # We've seen this column already, so it exists in multiple cases probably. Check the type and decide
-            # what to do
-            if field_type == seen_field_types[translated_key]:
-                # Same type so just skip it
-                continue
+                if "subtype" not in value:
+                    field_type = value["type"]
+                else:
+                    field_type = value["subtype"]
+
+            if translated_key in _bigquery_schema:
+                # We've seen this column already, so it exists in multiple cases probably. Check the type and decide
+                # what to do
+                if field_type == self.seen_field_types[translated_key]:
+                    # Same type so just skip it
+                    continue
+                else:
+                    # Different type; we need to cast it to string
+                    _bigquery_schema.pop(translated_key)
+                    _seen_field_types.pop(translated_key)
+                    field_type = "string"
+                    _cast_columns.append(translated_key)
+
+            # TODO: extend to other possible types in the entity schema from Sesam
+            if field_type == "integer":
+                bigquery_type = bigquery.SchemaField(translated_key, "INTEGER", mode=mode)
+            elif field_type == 'boolean':
+                bigquery_type = bigquery.SchemaField(translated_key, "BOOLEAN", mode=mode)
+            elif field_type == 'string':
+                bigquery_type = bigquery.SchemaField(translated_key, "STRING", mode=mode)
+            elif field_type == 'integer':
+                bigquery_type = bigquery.SchemaField(translated_key, "INTEGER", mode=mode)
+            elif field_type == "decimal":
+                bigquery_type = bigquery.SchemaField(translated_key, "BIGNUMERIC", mode=mode)
+                _cast_columns.append(translated_key)
+            elif field_type == "number":
+                bigquery_type = bigquery.SchemaField(translated_key, "BIGNUMERIC", mode=mode)
+                _cast_columns.append(translated_key)
+            elif field_type == "nanoseconds":
+                bigquery_type = bigquery.SchemaField(translated_key, "TIMESTAMP", mode=mode)
+                _cast_columns.append(translated_key)
+            elif field_type in ['object', 'array', 'bytes', 'bytes', 'uuid', 'uri', 'ni']:
+                bigquery_type = bigquery.SchemaField(translated_key, "STRING", mode=mode)
+                _cast_columns.append(translated_key)
             else:
-                # Different type; we need to cast it to string
-                schema.pop(translated_key)
-                seen_field_types.pop(translated_key)
-                field_type = "string"
-                cast_columns.append(translated_key)
+                logger.warning("Unknown field type '%s' - defaulting to 'STRING'" % field_type)
+                bigquery_type = bigquery.SchemaField(translated_key, "STRING", mode=mode)
+                _cast_columns.append(translated_key)
 
-        # TODO: extend to other possible types in the entity schema from Sesam
-        if field_type == "integer":
-            bigquery_type = bigquery.SchemaField(translated_key, "INTEGER", mode=mode)
-        elif field_type == 'boolean':
-            bigquery_type = bigquery.SchemaField(translated_key, "BOOLEAN", mode=mode)
-        elif field_type == 'string':
-            bigquery_type = bigquery.SchemaField(translated_key, "STRING", mode=mode)
-        elif field_type == 'integer':
-            bigquery_type = bigquery.SchemaField(translated_key, "INTEGER", mode=mode)
-        elif field_type == "decimal":
-            bigquery_type = bigquery.SchemaField(translated_key, "BIGNUMERIC", mode=mode)
-            cast_columns.append(translated_key)
-        elif field_type == "number":
-            bigquery_type = bigquery.SchemaField(translated_key, "BIGNUMERIC", mode=mode)
-            cast_columns.append(translated_key)
-        elif field_type == "nanoseconds":
-            bigquery_type = bigquery.SchemaField(translated_key, "TIMESTAMP", mode=mode)
-            cast_columns.append(translated_key)
-        elif field_type in ['object', 'array', 'bytes', 'bytes', 'uuid', 'uri', 'ni']:
-            bigquery_type = bigquery.SchemaField(translated_key, "STRING", mode=mode)
-            cast_columns.append(translated_key)
-        else:
-            logger.warning("Unknown field type '%s' - defaulting to 'STRING'" % field_type)
-            bigquery_type = bigquery.SchemaField(translated_key, "STRING", mode=mode)
-            cast_columns.append(translated_key)
+            _bigquery_schema[translated_key] = bigquery_type
+            _seen_field_types[translated_key] = field_type
 
-        schema[translated_key] = bigquery_type
-        seen_field_types[translated_key] = field_type
+        _cast_columns = sorted(list(set(_cast_columns)))
 
-    cast_columns = sorted(list(set(cast_columns)))
-
-    return schema, translation
-
-
-def update_entity_schema():
-    global  cast_columns, entity_schema, big_query_schema, property_column_translation
-    cast_columns = []
-
-    pipe_schema_url = node_url + "/pipes/" + pipe_id + "/entity-types/sink"
-    r = node_connection.do_get_request(pipe_schema_url)
-    entity_schema = r.json()
-
-    default_properties = {
-        "_deleted": {"type": "boolean"},
-        "_updated": {"type": "integer"}
-    }
-
-    entity_schema["properties"].update(default_properties)
-
-    big_query_schema, property_column_translation = generate_schema(entity_schema)
-
-
-update_entity_schema()
-
-#from pprint import pprint
-#pprint(entity_schema, indent=2)
+        self.entity_schema = _entity_schema
+        self.cast_columns = _cast_columns
+        self.bigquery_schema = _bigquery_schema
+        self.property_column_translation = _property_column_translation
+        self.seen_field_types = _seen_field_types
 
 
 def count_rows_in_table(table, retries=0, timeout=None, prefix=''):
@@ -446,22 +451,22 @@ def insert_entities_into_table_mt(table, entities):
         raise AssertionError("One or more threads failed to insert their partition, see the service log for details")
 
 
-def insert_into_bigquery(entities, table_schema, is_full, is_first, request_id, sequence_id, multithreaded=False):
+def insert_into_bigquery(entities, schema_info, is_full, is_first, request_id, sequence_id, multithreaded=False):
     # Remove _ts and _hash
     for entity in entities:
         entity.pop("_ts", None)
         entity.pop("_hash", None)
         entity.pop("_previous", None)
 
-    if cast_columns:
+    if schema_info.cast_columns:
         for entity in entities:
-            for key in property_column_translation:
+            for key in schema_info.property_column_translation:
                 # Translate properties->columns
                 if key not in entity:
                     continue
 
                 value = entity.get(key)
-                translated_key = property_column_translation.get(key, key)
+                translated_key = schema_info.property_column_translation.get(key, key)
 
                 def cast_value(_value):
                     # Check if we need to transit decode this value
@@ -484,14 +489,14 @@ def insert_into_bigquery(entities, table_schema, is_full, is_first, request_id, 
 
                     return str(_value)
 
-                if value is not None and translated_key in cast_columns:
+                if value is not None and translated_key in schema_info.cast_columns:
                     if isinstance(value, dict):
                         # Cast object values to string directly
                         # TODO: should we transit decode stuff recursively first?
                         value = json.dumps(value)
                     elif isinstance(value, list):
                         # Check if this is a supported list
-                        if table_schema[translated_key].mode == "REPEATED":
+                        if schema_info.bigquery_schema[translated_key].mode == "REPEATED":
                             result = []
                             for item in value:
                                 result.append(cast_value(item))
@@ -507,85 +512,69 @@ def insert_into_bigquery(entities, table_schema, is_full, is_first, request_id, 
 
                 entity[translated_key] = value
 
-    # Check for is_full
-    if is_full:
-        if is_first:
-            # Create target table
-            create_table(target_table, table_schema, replace=True)
+    # Create a separate source table. The tables will be merged later.
+    source_table = target_table + '_%s_%s_temp' % (sequence_id.replace("-", ""), request_id)
 
-# Commented out for now, always upload via a temptable to avoid lost data and other async weirdness
-#        # Upload test data to target_table
-#        if multithreaded:
-#            insert_entities_into_table_mt(target_table, entities)
-#        else:
-#            insert_entities_into_table(target_table, entities)
-#    else:
+    try:
+        # Create temp table
+        create_table(source_table, schema_info.bigquery_schema, replace=True)
 
-        # Create a separate source table. The tables will be merged later.
-        source_table = target_table + '_%s_%s_temp' % (sequence_id.replace("-", ""), request_id)
+        existing_count = [item[0] for item in
+                          client.query(f'SELECT COUNT(*) FROM `{target_table}`').result()][0]
 
-        # Create target table
-        create_table(target_table, table_schema, replace=(is_full and is_first))
+        logger.info("Row count before merge to table '%s' was: %s" % (target_table, existing_count))
 
+        # Upload test data to temp table
+        if multithreaded:
+            insert_entities_into_table_mt(source_table, entities)
+        else:
+            insert_entities_into_table(source_table, entities)
+
+        # Create MERGE query
+        # Make schema into array of strings
+        schema_arr = []
+        for ele in schema_info.bigquery_schema.values():
+            schema_arr.append("`" + ele.name + "`")
+
+        # Merge temp table and target table
+        merge_query = f"""
+        MERGE `{target_table}` T
+        USING
+        (SELECT {", ".join(["t." + ele.name for ele in schema_info.bigquery_schema.values()])}
+        FROM (
+        SELECT _id, MAX(_updated) AS _updated
+        FROM `{source_table}`
+        GROUP BY _id
+        )AS i JOIN `{source_table}` AS t ON t._id = i._id AND t._updated = i._updated) S
+        ON T._id = S._id
+        WHEN MATCHED AND S._deleted = true THEN
+            DELETE
+        WHEN NOT MATCHED AND (S._deleted IS NULL OR S._deleted = false) THEN
+            INSERT ({", ".join(schema_arr)})
+            VALUES ({", ".join(["S." + ele.name for ele in schema_info.bigquery_schema.values()])})
+        WHEN MATCHED AND (S._deleted IS NULL OR S._deleted = false) THEN
+            UPDATE
+            SET {", ".join(
+            ["`" + ele.name  + "` = S." + ele.name for ele in schema_info.bigquery_schema.values()])};
+        """
+
+        # Perform query and await result
+        query_job = client.query(merge_query)
+        query_job.result()
+
+        existing_count = [item[0] for item in
+                          client.query(f'SELECT COUNT(*) FROM `{target_table}`').result()][0]
+
+        logger.info("Row count after merge to table '%s' is: %s" % (target_table, existing_count))
+    except BaseException as e:
+        logger.exception("Failed to process batch")
+        raise e
+    finally:
         try:
-            # Create temp table
-            create_table(source_table, table_schema, replace=True)
-
-            existing_count = [item[0] for item in
-                              client.query(f'SELECT COUNT(*) FROM `{target_table}`').result()][0]
-
-            logger.info("Row count before merge to table '%s' was: %s" % (target_table, existing_count))
-
-            # Upload test data to temp table
-            if multithreaded:
-                insert_entities_into_table_mt(source_table, entities)
-            else:
-                insert_entities_into_table(source_table, entities)
-
-            # Create MERGE query
-            # Make schema into array of strings
-            schema_arr = []
-            for ele in table_schema.values():
-                schema_arr.append("`" + ele.name + "`")
-
-            # Merge temp table and target table
-            merge_query = f"""
-            MERGE `{target_table}` T
-            USING
-            (SELECT {", ".join(["t." + ele.name for ele in table_schema.values()])}
-            FROM (
-            SELECT _id, MAX(_updated) AS _updated
-            FROM `{source_table}`
-            GROUP BY _id
-            )AS i JOIN `{source_table}` AS t ON t._id = i._id AND t._updated = i._updated) S
-            ON T._id = S._id
-            WHEN MATCHED AND S._deleted = true THEN
-                DELETE
-            WHEN NOT MATCHED AND (S._deleted IS NULL OR S._deleted = false) THEN
-                INSERT ({", ".join(schema_arr)})
-                VALUES ({", ".join(["S." + ele.name for ele in table_schema.values()])})
-            WHEN MATCHED AND (S._deleted IS NULL OR S._deleted = false) THEN
-                UPDATE
-                SET {", ".join(["`" + ele.name  + "` = S." + ele.name for ele in table_schema.values()])};
-            """
-
-            # Perform query and await result
-            query_job = client.query(merge_query)
-            query_job.result()
-
-            existing_count = [item[0] for item in
-                              client.query(f'SELECT COUNT(*) FROM `{target_table}`').result()][0]
-
-            logger.info("Row count after merge to table '%s' is: %s" % (target_table, existing_count))
+            logger.info("Deleting temp table '%s'" % source_table)
+            client.delete_table(source_table)
         except BaseException as e:
-            logger.exception("Failed to process batch")
-            raise e
-        finally:
-            try:
-                logger.info("Deleting temp table '%s'" % source_table)
-                client.delete_table(source_table)
-            except BaseException as e:
-                logger.exception("Failed to drop temp table '%s'" % source_table)
+            logger.exception("Failed to drop temp table '%s'" % source_table)
 
 
 @app.route('/', methods=['GET'])
@@ -596,8 +585,6 @@ def root():
 @app.route('/receiver', methods=['POST'])
 def receiver():
     # get entities from request and write each of them to a file
-    global rows_seen
-
     entities = request.json
 
     is_full = request.args.get('is_full', "false")
@@ -612,30 +599,47 @@ def receiver():
     sequence_id = request.args.get('sequence_id', 0)
     request_id = request.args.get('request_id', 0)
 
+    schema_info = schema_cache.get(pipe_id)
+
     if is_full:
         if is_first:
-            # Update the schema info on full run, first batch - we'll be recreating the target table
-            update_entity_schema()
+            # Update the schema info on full run, first batch + recreate the target table
 
-        # Skip deleted entities if this is a full run
+            logger.info("Refreshing entity schema from pipe '%s'..." % pipe_id)
+            schema_cache.pop(pipe_id, None)
+            schema_info = SchemaInfo(pipe_id)
+            schema_cache[pipe_id] = schema_info
+
+            # Recreate the target table
+            logger.info("Recreating target table '%s'..." % target_table)
+            create_table(target_table, schema_info.bigquery_schema, replace=True)
+
+        # Skip deleted entities if this is a full run - the target table will be empty
         entities = [e for e in entities if e.get("_deleted", False) is False]
-
     try:
         if len(entities) > 0:
-            insert_into_bigquery(entities, big_query_schema, is_full, is_first, request_id, sequence_id,
+            if schema_info is None:
+                schema_info = SchemaInfo(pipe_id)
+                schema_cache[pipe_id] = schema_info
+
+            insert_into_bigquery(entities, schema_info, is_full, is_first, request_id, sequence_id,
                                  multithreaded=use_multithreaded)
+        else:
+            logger.info("Skipping empty batch...")
 
         if is_first:
-            rows_seen = len(entities)
+            schema_info.rows_seen = len(entities)
         else:
-            rows_seen += len(entities)
+            schema_info.rows_seen += len(entities)
 
         if is_last:
-            logger.info("I saw %s rows during this run" % rows_seen)
+            logger.info("I saw %s rows during this run" % schema_info.rows_seen)
 
     except BaseException as e:
         logger.exception("Something went wrong")
         raise BadRequest(f"Something went wrong! {str(e)}")
+
+    logger.info("Finishing the request!")
 
     # create the response
     return Response("Thanks!", mimetype='text/plain')
