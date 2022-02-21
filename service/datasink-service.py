@@ -25,20 +25,32 @@ if 'GOOGLE_APPLICATION_CREDENTIALS' not in os.environ:
 
     if not os.path.exists(credentials_path):
         # Local dev env for tom
-        credentials_path = '/home/tomb/Downloads/bigquery-microservice-70d791ad9009.json'
+        credentials_path = '/home/tomb/Downloads/bigquery-microservice-58c39f7392e7.json'
 
     os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = credentials_path
 else:
     # Dev env in the cloud
     credentials_content = os.environ['GOOGLE_APPLICATION_CREDENTIALS']
-    with open("/tmp/bigquery-microservice-8767565ff502.json", "w") as outfile:
+    with open("/tmp/bigquery-microservice-58c39f7392e7.json", "w") as outfile:
         outfile.write(credentials_content)
-    os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = "/tmp/bigquery-microservice-8767565ff502.json"
+    os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = "/tmp/bigquery-microservice-58c39f7392e7.json"
 
 client = bigquery.Client()
 
-cast_columns = []
+app = Flask(__name__)
 
+logger = logging.getLogger("datasink-service")
+
+jwt_token = os.environ.get("JWT_TOKEN")
+node_url = os.environ.get("NODE_URL")
+pipe_id = os.environ.get("PIPE_ID")
+target_table = os.environ.get("TARGET_TABLE")
+use_multithreaded = os.environ.get("MULTITHREADED", False) in ["1", 1, "true", "True"]
+
+node_connection = sesamclient.Connection(node_url, jwt_auth_token=jwt_token)
+
+cast_columns = entity_schema = big_query_schema = property_column_translation = None
+rows_seen = 0
 
 def datetime_as_int(dt):
     # convert to naive UTC datetime
@@ -97,7 +109,7 @@ def create_table(table_id, schema, replace=False):
         logger.info("Table '%s' didn't already exist" % table_id)
         pass
 
-    table_obj = bigquery.Table(table_id, schema=schema)
+    table_obj = bigquery.Table(table_id, schema=schema.values())
     logger.info("Creating table '%s'..." % table_id)
     client.create_table(table_obj)
 
@@ -122,6 +134,7 @@ def generate_schema(entity_schema):
     translation = {}
     seen_field_types = {}
     for key, value in entity_schema["properties"].items():
+        mode = "NULLABLE"
         translated_key = key.lower().replace(":", "__")
 
         s = ""
@@ -155,6 +168,11 @@ def generate_schema(entity_schema):
                 else:
                     field_type = field_types[0]["subtype"]
         else:
+            if "type" in value and value["type"] == "array" and value["items"]["type"] != "anyOf":
+                # Array of single types -> mode:REPEATED, so the "real" data type resides in "items"
+                value = value["items"]
+                mode = "REPEATED"
+
             if "subtype" not in value:
                 field_type = value["type"]
             else:
@@ -175,28 +193,28 @@ def generate_schema(entity_schema):
 
         # TODO: extend to other possible types in the entity schema from Sesam
         if field_type == "integer":
-            bigquery_type = bigquery.SchemaField(translated_key, "INTEGER")
+            bigquery_type = bigquery.SchemaField(translated_key, "INTEGER", mode=mode)
         elif field_type == 'boolean':
-            bigquery_type = bigquery.SchemaField(translated_key, "BOOLEAN")
+            bigquery_type = bigquery.SchemaField(translated_key, "BOOLEAN", mode=mode)
         elif field_type == 'string':
-            bigquery_type = bigquery.SchemaField(translated_key, "STRING")
+            bigquery_type = bigquery.SchemaField(translated_key, "STRING", mode=mode)
         elif field_type == 'integer':
-            bigquery_type = bigquery.SchemaField(translated_key, "INTEGER")
+            bigquery_type = bigquery.SchemaField(translated_key, "INTEGER", mode=mode)
         elif field_type == "decimal":
-            bigquery_type = bigquery.SchemaField(translated_key, "BIGNUMERIC")
+            bigquery_type = bigquery.SchemaField(translated_key, "BIGNUMERIC", mode=mode)
             cast_columns.append(translated_key)
         elif field_type == "number":
-            bigquery_type = bigquery.SchemaField(translated_key, "BIGNUMERIC")
+            bigquery_type = bigquery.SchemaField(translated_key, "BIGNUMERIC", mode=mode)
             cast_columns.append(translated_key)
         elif field_type == "nanoseconds":
-            bigquery_type = bigquery.SchemaField(translated_key, "TIMESTAMP")
+            bigquery_type = bigquery.SchemaField(translated_key, "TIMESTAMP", mode=mode)
             cast_columns.append(translated_key)
         elif field_type in ['object', 'array', 'bytes', 'bytes', 'uuid', 'uri', 'ni']:
-            bigquery_type = bigquery.SchemaField(translated_key, "STRING")
+            bigquery_type = bigquery.SchemaField(translated_key, "STRING", mode=mode)
             cast_columns.append(translated_key)
         else:
             logger.warning("Unknown field type '%s' - defaulting to 'STRING'" % field_type)
-            bigquery_type = bigquery.SchemaField(translated_key, "STRING")
+            bigquery_type = bigquery.SchemaField(translated_key, "STRING", mode=mode)
             cast_columns.append(translated_key)
 
         schema[translated_key] = bigquery_type
@@ -204,38 +222,31 @@ def generate_schema(entity_schema):
 
     cast_columns = sorted(list(set(cast_columns)))
 
-    return schema.values(), translation
+    return schema, translation
 
 
-app = Flask(__name__)
+def update_entity_schema():
+    global  cast_columns, entity_schema, big_query_schema, property_column_translation
+    cast_columns = []
 
-logger = logging.getLogger("datasink-service")
+    pipe_schema_url = node_url + "/pipes/" + pipe_id + "/entity-types/sink"
+    r = node_connection.do_get_request(pipe_schema_url)
+    entity_schema = r.json()
 
-jwt_token = os.environ.get("JWT_TOKEN")
-node_url = os.environ.get("NODE_URL")
-pipe_id = os.environ.get("PIPE_ID")
-target_table = os.environ.get("TARGET_TABLE")
-use_multithreaded = os.environ.get("MULTITHREADED", False) in ["1", 1, "true", "True"]
+    default_properties = {
+        "_deleted": {"type": "boolean"},
+        "_updated": {"type": "integer"}
+    }
 
-node_connection = sesamclient.Connection(node_url, jwt_auth_token=jwt_token)
+    entity_schema["properties"].update(default_properties)
 
-pipe_schema_url = node_url + "/pipes/" + pipe_id + "/entity-types/sink"
-r = node_connection.do_get_request(pipe_schema_url)
-entity_schema = r.json()
+    big_query_schema, property_column_translation = generate_schema(entity_schema)
 
-default_properties = {
-    "_deleted": {"type": "boolean"},
-    "_updated": {"type": "integer"}
-}
 
-entity_schema["properties"].update(default_properties)
-
-big_query_schema, property_column_translation = generate_schema(entity_schema)
+update_entity_schema()
 
 #from pprint import pprint
 #pprint(entity_schema, indent=2)
-
-rows_seen = 0
 
 
 def count_rows_in_table(table, retries=0, timeout=None, prefix=''):
@@ -451,30 +462,45 @@ def insert_into_bigquery(entities, table_schema, is_full, is_first, request_id, 
 
                 value = entity.get(key)
                 translated_key = property_column_translation.get(key, key)
-                if value is not None and translated_key in cast_columns:
-                    if not isinstance(value, (list, dict)):
-                        # Check if we need to transit decode this value
-                        if isinstance(value, str) and len(value) > 1 and value[0] == "~":
-                            prefix = value[:2]
-                            if prefix in ["~r", "~u", "~:", "~b"]:
-                                # URI, NI, UUID, bytes, Nanosecond: just cast it to string without the prefix
-                                value = value[len(prefix):]
-                            elif prefix in ["~d", "~f"]:
-                                # Float or decimal
-                                value = float(Decimal(value[len(prefix):]))
-                            elif prefix == "̃~t":
-                                # Truncate nanoseconds to microseconds to be compatible with BQ
-                                value = value[len(prefix):]
-                                dt_int = datetime_parse(value)
-                                value = datetime_format(dt_int)
-                            else:
-                                # Unknown type, strip the prefix off
-                                value = value[len(prefix):]
 
-                        value = str(value)
-                    else:
-                        # Cast any arrays and objects values to string
+                def cast_value(_value):
+                    # Check if we need to transit decode this value
+                    if isinstance(_value, str) and len(_value) > 1 and _value[0] == "~":
+                        prefix = _value[:2]
+                        if prefix in ["~r", "~u", "~:", "~b"]:
+                            # URI, NI, UUID, bytes, Nanosecond: just cast it to string without the prefix
+                            _value = _value[len(prefix):]
+                        elif prefix in ["~d", "~f"]:
+                            # Float or decimal
+                            _value = float(Decimal(_value[len(prefix):]))
+                        elif prefix == "̃~t":
+                            # Truncate nanoseconds to microseconds to be compatible with BQ
+                            _value = _value[len(prefix):]
+                            dt_int = datetime_parse(_value)
+                            _value = datetime_format(dt_int)
+                        else:
+                            # Unknown type, strip the prefix off
+                            _value = _value[len(prefix):]
+
+                    return str(_value)
+
+                if value is not None and translated_key in cast_columns:
+                    if isinstance(value, dict):
+                        # Cast object values to string directly
+                        # TODO: should we transit decode stuff recursively first?
                         value = json.dumps(value)
+                    elif isinstance(value, list):
+                        # Check if this is a supported list
+                        if table_schema[translated_key].mode == "REPEATED":
+                            result = []
+                            for item in value:
+                                result.append(cast_value(item))
+                            value = result
+                        else:
+                            # Columns with mixed values we just serialize to json
+                            value = json.dumps(value)
+                    else:
+                        value = cast_value(value)
 
                 if translated_key != key:
                     entity.pop(key, None)
@@ -485,7 +511,7 @@ def insert_into_bigquery(entities, table_schema, is_full, is_first, request_id, 
     if is_full:
         if is_first:
             # Create target table
-            create_table(target_table, big_query_schema, replace=True)
+            create_table(target_table, table_schema, replace=True)
 
 # Commented out for now, always upload via a temptable to avoid lost data and other async weirdness
 #        # Upload test data to target_table
@@ -499,11 +525,11 @@ def insert_into_bigquery(entities, table_schema, is_full, is_first, request_id, 
         source_table = target_table + '_%s_%s_temp' % (sequence_id.replace("-", ""), request_id)
 
         # Create target table
-        create_table(target_table, big_query_schema, replace=(is_full and is_first))
+        create_table(target_table, table_schema, replace=(is_full and is_first))
 
         try:
             # Create temp table
-            create_table(source_table, big_query_schema, replace=True)
+            create_table(source_table, table_schema, replace=True)
 
             existing_count = [item[0] for item in
                               client.query(f'SELECT COUNT(*) FROM `{target_table}`').result()][0]
@@ -519,14 +545,14 @@ def insert_into_bigquery(entities, table_schema, is_full, is_first, request_id, 
             # Create MERGE query
             # Make schema into array of strings
             schema_arr = []
-            for ele in table_schema:
+            for ele in table_schema.values():
                 schema_arr.append("`" + ele.name + "`")
 
             # Merge temp table and target table
             merge_query = f"""
             MERGE `{target_table}` T
             USING
-            (SELECT {", ".join(["t." + ele.name for ele in table_schema])}
+            (SELECT {", ".join(["t." + ele.name for ele in table_schema.values()])}
             FROM (
             SELECT _id, MAX(_updated) AS _updated
             FROM `{source_table}`
@@ -537,10 +563,10 @@ def insert_into_bigquery(entities, table_schema, is_full, is_first, request_id, 
                 DELETE
             WHEN NOT MATCHED AND (S._deleted IS NULL OR S._deleted = false) THEN
                 INSERT ({", ".join(schema_arr)})
-                VALUES ({", ".join(["S." + ele.name for ele in table_schema])})
+                VALUES ({", ".join(["S." + ele.name for ele in table_schema.values()])})
             WHEN MATCHED AND (S._deleted IS NULL OR S._deleted = false) THEN
                 UPDATE
-                SET {", ".join(["`" + ele.name  + "` = S." + ele.name for ele in table_schema])};
+                SET {", ".join(["`" + ele.name  + "` = S." + ele.name for ele in table_schema.values()])};
             """
 
             # Perform query and await result
@@ -587,6 +613,10 @@ def receiver():
     request_id = request.args.get('request_id', 0)
 
     if is_full:
+        if is_first:
+            # Update the schema info on full run, first batch - we'll be recreating the target table
+            update_entity_schema()
+
         # Skip deleted entities if this is a full run
         entities = [e for e in entities if e.get("_deleted", False) is False]
 
