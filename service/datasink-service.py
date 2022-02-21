@@ -639,8 +639,6 @@ def receiver():
         logger.exception("Something went wrong")
         raise BadRequest(f"Something went wrong! {str(e)}")
 
-    logger.info("Finishing the request!")
-
     # create the response
     return Response("Thanks!", mimetype='text/plain')
 
