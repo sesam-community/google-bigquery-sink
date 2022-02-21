@@ -9,3 +9,4 @@ pytz==2017.3
 sesamclient==0.2.119
 google-cloud-bigquery==2.31.0
 more-itertools
+markupsafe==2.0.1
