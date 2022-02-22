@@ -16,6 +16,7 @@ from google.cloud import bigquery
 from google.cloud.exceptions import NotFound
 from google.api_core.exceptions import GoogleAPICallError
 from decimal import Decimal
+from threading import RLock
 
 EPOCH = datetime.utcfromtimestamp(0)  # NOTE: this is a datetime with tzinfo=None
 
@@ -43,13 +44,15 @@ logger = logging.getLogger("datasink-service")
 
 jwt_token = os.environ.get("JWT_TOKEN")
 node_url = os.environ.get("NODE_URL")
-pipe_id = os.environ.get("PIPE_ID")
-target_table = os.environ.get("TARGET_TABLE")
+config_pipe_id = os.environ.get("PIPE_ID")
+config_target_table = os.environ.get("TARGET_TABLE")
 use_multithreaded = os.environ.get("MULTITHREADED", False) in ["1", 1, "true", "True"]
 
 node_connection = sesamclient.Connection(node_url, jwt_auth_token=jwt_token)
 
 schema_cache = {}
+client_locks_lock = RLock()
+client_locks = {}
 
 
 def datetime_as_int(dt):
@@ -451,7 +454,7 @@ def insert_entities_into_table_mt(table, entities):
         raise AssertionError("One or more threads failed to insert their partition, see the service log for details")
 
 
-def insert_into_bigquery(entities, schema_info, is_full, is_first, request_id, sequence_id, multithreaded=False):
+def insert_into_bigquery(target_table, entities, schema_info, request_id, sequence_id, multithreaded=False):
     # Remove _ts and _hash
     for entity in entities:
         entity.pop("_ts", None)
@@ -599,30 +602,51 @@ def receiver():
     sequence_id = request.args.get('sequence_id', 0)
     request_id = request.args.get('request_id', 0)
 
-    schema_info = schema_cache.get(pipe_id)
+    request_pipe_id = request.args.get("pipe_id")
+    if request_pipe_id is not None:
+        # If the pipe id is given as a param, then the target table should be too. Raise a Badrequest if not
+        request_target_table = request.args.get("target_table")
+        if request_target_table is None:
+            raise BadRequest("If pipe_id is used as a parameter, then target_table needs to be provided as a "
+                             "parameter as well")
+    else:
+        request_pipe_id = config_pipe_id
+        request_target_table = config_target_table
 
-    if is_full:
-        if is_first:
-            # Update the schema info on full run, first batch + recreate the target table
+    with client_locks_lock:
+        lock_key = "%s_%s" % (request_pipe_id, request_target_table)
+        if lock_key not in client_locks:
+            client_locks[lock_key] = RLock()
 
-            logger.info("Refreshing entity schema from pipe '%s'..." % pipe_id)
-            schema_cache.pop(pipe_id, None)
-            schema_info = SchemaInfo(pipe_id)
-            schema_cache[pipe_id] = schema_info
+        # Don't allow more than one request per pipe/target table combo at a time
+        if not client_locks[lock_key].acquire(blocking=False):
+            raise BadRequest(f"Another request processing pipe '{request_pipe_id}' and "
+                             f"target table '{request_target_table}' is already running")
 
-            # Recreate the target table
-            logger.info("Recreating target table '%s'..." % target_table)
-            create_table(target_table, schema_info.bigquery_schema, replace=True)
-
-        # Skip deleted entities if this is a full run - the target table will be empty
-        entities = [e for e in entities if e.get("_deleted", False) is False]
     try:
+        schema_info = schema_cache.get(request_pipe_id)
+        if is_full:
+            if is_first:
+                # Update the schema info on full run, first batch + recreate the target table
+
+                logger.info("Refreshing entity schema from pipe '%s'..." % request_pipe_id)
+                schema_cache.pop(request_pipe_id, None)
+                schema_info = SchemaInfo(request_pipe_id)
+                schema_cache[request_pipe_id] = schema_info
+
+                # Recreate the target table
+                logger.info("Recreating target table '%s'..." % request_target_table)
+                create_table(request_target_table, schema_info.bigquery_schema, replace=True)
+
+                # Skip deleted entities if this is a full run - the target table will be empty
+                entities = [e for e in entities if e.get("_deleted", False) is False]
+
         if len(entities) > 0:
             if schema_info is None:
-                schema_info = SchemaInfo(pipe_id)
-                schema_cache[pipe_id] = schema_info
+                schema_info = SchemaInfo(request_pipe_id)
+                schema_cache[request_pipe_id] = schema_info
 
-            insert_into_bigquery(entities, schema_info, is_full, is_first, request_id, sequence_id,
+            insert_into_bigquery(request_target_table, entities, schema_info, request_id, sequence_id,
                                  multithreaded=use_multithreaded)
         else:
             logger.info("Skipping empty batch...")
@@ -634,10 +658,13 @@ def receiver():
 
         if is_last:
             logger.info("I saw %s rows during this run" % schema_info.rows_seen)
-
     except BaseException as e:
         logger.exception("Something went wrong")
         raise BadRequest(f"Something went wrong! {str(e)}")
+    finally:
+        with client_locks_lock:
+            # Release the lock preventing other requests for the same pipe/target table
+            client_locks[lock_key].release()
 
     # create the response
     return Response("Thanks!", mimetype='text/plain')
