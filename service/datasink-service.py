@@ -206,7 +206,7 @@ class SchemaInfo:
             if translated_key in _bigquery_schema:
                 # We've seen this column already, so it exists in multiple cases probably. Check the type and decide
                 # what to do
-                if field_type == self.seen_field_types[translated_key]:
+                if field_type == _seen_field_types[translated_key]:
                     # Same type so just skip it
                     continue
                 else:
