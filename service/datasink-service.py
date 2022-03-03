@@ -30,7 +30,7 @@ PIPE_CONFIG_TEMPLATE = """
     "type": "json",
     "system": "%(system_id)s",
     "batch_size": %(batch_size)s,
-    "url": "receiver?pipe_id=%(dataset_id)s&target_table=%(dataset_id)s"
+    "url": "receiver?pipe_id=%(dataset_id)s&target_table=%(table_prefix)s.%(dataset_id)s"
   },
   "pump": {
     "schedule_interval": %(interval)s,
@@ -782,6 +782,7 @@ class GlobalBootstrapper:
                     "system_id": bq_system_id,
                     "dataset_id": dataset_id,
                     "batch_size": 10000,
+                    "table_prefix": bq_table_prefix,
                     "config_group": bootstrap_config_group,
                     "interval": 3600
                 }
