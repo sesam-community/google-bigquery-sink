@@ -773,8 +773,8 @@ class GlobalBootstrapper:
             else:
                 bq_system_id = "bigquery-%s" % dataset_id
 
-            if bq_pipe_id not in pipes:
-                logger.info("Found new global '%s' or recreating an existing pipe - "
+            if bq_pipe_id not in pipes or bootstrap_pipes_recreate_pipes is not False:
+                logger.info("Found a new global '%s' or recreating an existing pipe - "
                             "generating pipe and/or system..." % dataset_id)
 
                 pipe_config_params = {
@@ -800,6 +800,7 @@ class GlobalBootstrapper:
                     system_config = json.loads(SYSTEM_CONFIG_TEMPLATE % system_params)
                     new_system_configs[bq_system_id] = system_config
 
+        new_configs = []
         for system_id, system_config in new_system_configs.items():
             system = self.connection.get_system(system_id)
             if system is not None:
@@ -807,8 +808,12 @@ class GlobalBootstrapper:
                 system.modify(system_config)
             else:
                 logger.info("Adding new system '%s'.." % system_id)
-                self.connection.add_systems([system_config])
+                new_configs.append(system_config)
 
+        if new_configs:
+            self.connection.add_systems(new_configs)
+
+        new_configs = []
         for pipe_id, pipe_config in new_pipe_configs.items():
             pipe = self.connection.get_pipe(pipe_id)
             if pipe is not None:
@@ -816,9 +821,19 @@ class GlobalBootstrapper:
                 pipe.modify(pipe_config)
             else:
                 logger.info("Adding new pipe '%s'.." % pipe_id)
-                self.connection.add_pipes([pipe_config])
-                pipe = self.connection.get_pipe(pipe_id)
+                new_configs.append(pipe_config)
 
+        if new_configs:
+            self.connection.add_pipes(new_configs)
+
+        # Wait for pipes to be deployed, then run them
+        for pipe_id in new_pipe_configs.keys():
+            pipe = self.connection.get_pipe(pipe_id)
+
+            logger.info("Waiting for pipe '%s' to be deployed..." % pipe_id)
+            pipe.wait_for_pipe_to_be_deployed(timeout=60*15)
+            logger.info("Pipe '%s' has been deployed." % pipe_id)
+            logger.info("Running pipe '%s'..." % pipe_id)
             pump = pipe.get_pump()
             pump.start()
 
