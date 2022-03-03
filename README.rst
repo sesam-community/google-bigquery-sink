@@ -45,6 +45,8 @@ BOOTSTRAP_SINGLE_SYSTEM - if set to 'true' will use a single system with the id 
 
 BOOTSTRAP_CONFIG_GROUP - the config group to generate pipes and systems in, if not set defaults to "analytics"
 
+BOOTSTRAP_INTERVAL - how often (in hours) to rerun the bootstrapping process - the default is 24
+
 Note that if you set up the MS to bootstrap a node, you should name it in such a way that it will not be overwritten by the generated systems which all will start with "bigquery", for instance use the id "bootstrap-bigquery".
 
 Example config:

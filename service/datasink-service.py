@@ -103,6 +103,7 @@ bootstrap_pipes = os.environ.get("BOOTSTRAP_PIPES", False)
 bootstrap_single_system = os.environ.get("BOOTSTRAP_SINGLE_SYSTEM", False)
 use_multithreaded = os.environ.get("MULTITHREADED", "true") in ["1", 1, "true", "True"]
 bootstrap_config_group = os.environ.get("BOOTSTRAP_CONFIG_GROUP", "analytics")
+bootstrap_interval = os.environ.get("BOOTSTRAP_INTERVAL", "24")
 
 node_connection = sesamclient.Connection(node_url, jwt_auth_token=jwt_token)
 
@@ -731,7 +732,13 @@ class GlobalBootstrapper:
     def __init__(self, connection):
         logger.info("Starting bootstrap thread...")
         self.connection = connection
-        self.timeout_hours = 24
+        try:
+            self.timeout_hours = int(bootstrap_interval)
+        except ValueError:
+            logger.error("The 'BOOTSTRAP_INTERVAL' value '%s' is convertable to an integer, "
+                         "defaulting to 24 hours" % bootstrap_interval)
+            self.timeout_hours = 24
+
         self._thread = Thread(target=self.do_update, daemon=True)
         self._thread.start()
         logger.info("Bootstrap thread started!")
