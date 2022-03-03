@@ -789,7 +789,7 @@ class GlobalBootstrapper:
                 pipe_config = json.loads(PIPE_CONFIG_TEMPLATE % pipe_config_params)
 
                 new_pipe_configs[bq_pipe_id] = pipe_config
-                if bq_system_id not in new_system_configs:
+                if bq_system_id not in new_system_configs or bootstrap_pipes_recreate_pipes is not False:
                     system_params = {
                         "system_id": bq_system_id,
                         "config_group": bootstrap_config_group,
