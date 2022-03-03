@@ -833,9 +833,9 @@ class GlobalBootstrapper:
             logger.info("Waiting for pipe '%s' to be deployed..." % pipe_id)
             pipe.wait_for_pipe_to_be_deployed(timeout=60*15)
             logger.info("Pipe '%s' has been deployed." % pipe_id)
-            logger.info("Running pipe '%s'..." % pipe_id)
-            pump = pipe.get_pump()
-            pump.start()
+            #logger.info("Running pipe '%s'..." % pipe_id)
+            #pump = pipe.get_pump()
+            #pump.start(dont_wait_for_pump_to_start=True)
 
 
 if __name__ == '__main__':
