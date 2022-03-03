@@ -16,7 +16,58 @@ from google.cloud import bigquery
 from google.cloud.exceptions import NotFound
 from google.api_core.exceptions import GoogleAPICallError
 from decimal import Decimal
-from threading import RLock
+from threading import RLock, Thread
+
+PIPE_CONFIG_TEMPLATE = """
+{
+  "_id": "%(pipe_id)s",
+  "type": "pipe",
+  "source": {
+    "type": "dataset",
+    "dataset": "%(dataset_id)s"
+  },
+  "sink": {
+    "type": "json",
+    "system": "%(system_id)s",
+    "batch_size": %(batch_size)s,
+    "url": "receiver?pipe_id=%(dataset_id)s&target_table=tomb-%(dataset_id)s"
+  },
+  "pump": {
+    "schedule_interval": %(interval)s,
+    "fallback_to_single_entities_on_batch_fail": false
+  },
+  "metadata": {
+    "$config-group": "%(config_group)s"
+  },
+  "batch_size": %(batch_size)s,
+  "remove_namespaces": false
+}
+"""
+
+SYSTEM_CONFIG_TEMPLATE = """
+{
+  "_id": "%(system_id)s",
+  "type": "system:microservice",
+  "metadata": {
+    "$config-group": "%(config_group)s"
+  },
+  "docker": {
+    "environment": {
+      "GOOGLE_APPLICATION_CREDENTIALS": "$SECRET(bigquery-credentials)",
+      "JWT_TOKEN": "$SECRET(bigquery-ms-jwt)",
+      "MULTITHREADED": "true",
+      "NODE_URL": "%(node_url)s",
+      "BIGQUERY_TABLE_PREFIX": "%(table_prefix)s"
+    },
+    "image": "sesam/sesam-bigquery:latest",
+    "memory": 1512,
+    "port": 5000
+  },
+  "read_timeout": 7200,
+  "use_https": false,
+  "verify_ssl": false
+}
+"""
 
 EPOCH = datetime.utcfromtimestamp(0)  # NOTE: this is a datetime with tzinfo=None
 
@@ -45,8 +96,13 @@ logger = logging.getLogger("datasink-service")
 jwt_token = os.environ.get("JWT_TOKEN")
 node_url = os.environ.get("NODE_URL")
 config_pipe_id = os.environ.get("PIPE_ID")
+bq_table_prefix = os.environ.get("BIGQUERY_TABLE_PREFIX")
 config_target_table = os.environ.get("TARGET_TABLE")
-use_multithreaded = os.environ.get("MULTITHREADED", False) in ["1", 1, "true", "True"]
+bootstrap_pipes_recreate_pipes = os.environ.get("BOOTSTRAP_RECREATE_PIPES", False)
+bootstrap_pipes = os.environ.get("BOOTSTRAP_PIPES", False)
+bootstrap_single_system = os.environ.get("BOOTSTRAP_SINGLE_SYSTEM", False)
+use_multithreaded = os.environ.get("MULTITHREADED", "true") in ["1", 1, "true", "True"]
+bootstrap_config_group = os.environ.get("BOOTSTRAP_CONFIG_GROUP", "analytics")
 
 node_connection = sesamclient.Connection(node_url, jwt_auth_token=jwt_token)
 
@@ -670,6 +726,96 @@ def receiver():
     return Response("Thanks!", mimetype='text/plain')
 
 
+class GlobalBootstrapper:
+
+    def __init__(self, connection):
+        logger.info("Starting bootstrap thread...")
+        self.connection = connection
+        self.timeout_hours = 24
+        self._thread = Thread(target=self.do_update, daemon=True)
+        self._thread.start()
+        logger.info("Bootstrap thread started!")
+
+    def do_update(self):
+        while True:
+            try:
+                logger.info("Updating pipes...")
+                self.update_pipes()
+                logger.info("Pipes were updated!")
+            except BaseException as e:
+                logger.exception("Failed to update pipes!")
+
+            logger.info("Bootstrapper now sleeping for %s hours.." % self.timeout_hours)
+            time.sleep(self.timeout_hours * 24)
+
+    def update_pipes(self):
+        # Check that all globals have corresponding "share" pipes
+        global_datasets = []
+        pipes = {}
+        for pipe in self.connection.get_pipes():
+            pipes[pipe.id] = pipe
+            if pipe.config["effective"].get("metadata", {}).get("global", False) is True:
+                global_datasets.append(pipe.config.get("sink", {}).get("dataset", pipe.id))
+
+        new_pipe_configs = {}
+        new_system_configs = {}
+        for dataset_id in global_datasets:
+            bq_pipe_id = "bigquery-%s-share" % dataset_id
+            if bootstrap_single_system:
+                bq_system_id = "bigquery"
+            else:
+                bq_system_id = "bigquery-%s" % dataset_id
+
+            if bq_pipe_id not in pipes:
+                logger.info("Found new global '%s' or recreating an existing pipe - "
+                            "generating pipe and/or system..." % dataset_id)
+
+                pipe_config_params = {
+                    "pipe_id": bq_pipe_id,
+                    "system_id": bq_system_id,
+                    "dataset_id": dataset_id,
+                    "batch_size": 10000,
+                    "config_group": bootstrap_config_group,
+                    "interval": 3600
+                }
+
+                pipe_config = json.loads(PIPE_CONFIG_TEMPLATE % pipe_config_params)
+
+                new_pipe_configs[bq_pipe_id] = pipe_config
+                if bq_system_id not in new_system_configs:
+                    system_params = {
+                        "system_id": bq_system_id,
+                        "config_group": bootstrap_config_group,
+                        "node_url": node_url,
+                        "table_prefix": bq_table_prefix
+                    }
+
+                    system_config = json.loads(SYSTEM_CONFIG_TEMPLATE % system_params)
+                    new_system_configs[bq_system_id] = system_config
+
+        for system_id, system_config in new_system_configs.items():
+            system = self.connection.get_system(system_id)
+            if system is not None:
+                logger.info("Overwriting existing system '%s'.." % system_id)
+                system.modify(system_config)
+            else:
+                logger.info("Adding new system '%s'.." % system_id)
+                self.connection.add_systems([system_config])
+
+        for pipe_id, pipe_config in new_pipe_configs.items():
+            pipe = self.connection.get_pipe(pipe_id)
+            if pipe is not None:
+                logger.info("Overwriting existing pipe '%s'.." % pipe_id)
+                pipe.modify(pipe_config)
+            else:
+                logger.info("Adding new pipe '%s'.." % pipe_id)
+                self.connection.add_pipes([pipe_config])
+                pipe = self.connection.get_pipe(pipe_id)
+
+            pump = pipe.get_pump()
+            pump.start()
+
+
 if __name__ == '__main__':
     format_string = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 
@@ -690,6 +836,12 @@ if __name__ == '__main__':
         logger.info("Running in multithreaded mode")
     else:
         logger.info("Running in single threaded mode")
+
+    if bootstrap_pipes is not False:
+        if bq_table_prefix is None:
+            logger.error("Told to bootstrap globals, but missing required 'BIGQUERY_TABLE_PREFIX' environment variable")
+        else:
+            bootstrapper = GlobalBootstrapper(node_connection)
 
     cherrypy.tree.graft(app, '/')
 
