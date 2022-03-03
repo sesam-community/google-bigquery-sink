@@ -30,7 +30,7 @@ PIPE_CONFIG_TEMPLATE = """
     "type": "json",
     "system": "%(system_id)s",
     "batch_size": %(batch_size)s,
-    "url": "receiver?pipe_id=%(dataset_id)s&target_table=tomb-%(dataset_id)s"
+    "url": "receiver?pipe_id=%(dataset_id)s&target_table=%(dataset_id)s"
   },
   "pump": {
     "schedule_interval": %(interval)s,
@@ -833,9 +833,6 @@ class GlobalBootstrapper:
             logger.info("Waiting for pipe '%s' to be deployed..." % pipe_id)
             pipe.wait_for_pipe_to_be_deployed(timeout=60*15)
             logger.info("Pipe '%s' has been deployed." % pipe_id)
-            #logger.info("Running pipe '%s'..." % pipe_id)
-            #pump = pipe.get_pump()
-            #pump.start(dont_wait_for_pump_to_start=True)
 
 
 if __name__ == '__main__':
