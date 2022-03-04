@@ -18,6 +18,8 @@ from google.api_core.exceptions import GoogleAPICallError
 from decimal import Decimal
 from threading import RLock, Thread
 
+version = "1.0.0"
+
 PIPE_CONFIG_TEMPLATE = """
 {
   "_id": "%(pipe_id)s",
@@ -195,7 +197,10 @@ class SchemaInfo:
     cast_columns = {}
     rows_seen = 0
     seen_field_types = {}
+    nonvalid_underscore_properties = []
     pipe_id = None
+
+    valid_internal_properties = ["_id", "_updated", "_deleted"]
 
     def __init__(self, pipe_id):
         self.pipe_id = pipe_id
@@ -217,8 +222,14 @@ class SchemaInfo:
         _bigquery_schema = {}
         _property_column_translation = {}
         _seen_field_types = {}
+        _nonvalid_underscore_properties = {}
 
         for key, value in _entity_schema["properties"].items():
+            if key[0] == "_" and key not in self.valid_internal_properties:
+                # skip any non-internal underscore properties (which would be deleted in the dataset sink anyway)
+                _nonvalid_underscore_properties[key] = 1
+                continue
+
             mode = "NULLABLE"
             translated_key = key.lower().replace(":", "__")
 
@@ -312,6 +323,7 @@ class SchemaInfo:
         self.bigquery_schema = _bigquery_schema
         self.property_column_translation = _property_column_translation
         self.seen_field_types = _seen_field_types
+        self.nonvalid_underscore_properties = list(_nonvalid_underscore_properties.keys())
 
 
 def count_rows_in_table(table, retries=0, timeout=None, prefix=''):
@@ -514,12 +526,18 @@ def insert_entities_into_table_mt(table, entities):
 def insert_into_bigquery(target_table, entities, schema_info, request_id, sequence_id, multithreaded=False):
     # Remove _ts and _hash
     for entity in entities:
+
         entity.pop("_ts", None)
         entity.pop("_hash", None)
         entity.pop("_previous", None)
 
     if schema_info.cast_columns:
         for entity in entities:
+            for key in schema_info.nonvalid_underscore_properties:
+                # Remove invalid underscore properties (unneeded internals and user-created ones that the dataset
+                # sink would strip away in any case)
+                entity.pop(key, None)
+
             for key in schema_info.property_column_translation:
                 # Translate properties->columns
                 if key not in entity:
@@ -695,8 +713,9 @@ def receiver():
                 logger.info("Recreating target table '%s'..." % request_target_table)
                 create_table(request_target_table, schema_info.bigquery_schema, replace=True)
 
-                # Skip deleted entities if this is a full run - the target table will be empty
-                entities = [e for e in entities if e.get("_deleted", False) is False]
+            # Skip deleted entities if this is a full run - the target table will be empty so nothing will be deleted
+            # anyway
+            entities = [e for e in entities if e.get("_deleted", False) is False]
 
         if len(entities) > 0:
             if schema_info is None:
@@ -762,6 +781,11 @@ class GlobalBootstrapper:
         for pipe in self.connection.get_pipes():
             pipes[pipe.id] = pipe
             if pipe.config["effective"].get("metadata", {}).get("global", False) is True:
+                if "infer_pipe_entity_types" in pipe.config["effective"] and \
+                        pipe.config["effective"]["infer_pipe_entity_types"] is False:
+                    # Skip creating pipes for globals that have no schema info
+                    continue
+
                 global_datasets.append(pipe.config.get("sink", {}).get("dataset", pipe.id))
 
         new_pipe_configs = {}
@@ -851,6 +875,8 @@ if __name__ == '__main__':
 
     logger.propagate = False
     logger.setLevel(logging.INFO)
+
+    logger.info("Starting BiqQuery sink version %s" % version)
 
     if use_multithreaded:
         logger.info("Running in multithreaded mode")
