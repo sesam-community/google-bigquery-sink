@@ -18,7 +18,7 @@ from google.api_core.exceptions import GoogleAPICallError
 from decimal import Decimal
 from threading import RLock, Thread
 
-version = "1.0.0"
+version = "1.0.1"
 
 PIPE_CONFIG_TEMPLATE = """
 {
@@ -524,71 +524,64 @@ def insert_entities_into_table_mt(table, entities):
 
 
 def insert_into_bigquery(target_table, entities, schema_info, request_id, sequence_id, multithreaded=False):
-    # Remove _ts and _hash
+    # Remove irrelevant properties and translate property names and, if needed, values
     for entity in entities:
+        for key in schema_info.nonvalid_underscore_properties:
+            # Remove invalid underscore properties (unneeded internals and user-created ones that the dataset
+            # sink would strip away in any case)
+            entity.pop(key, None)
 
-        entity.pop("_ts", None)
-        entity.pop("_hash", None)
-        entity.pop("_previous", None)
+        for key in schema_info.property_column_translation:
+            # Translate properties->columns
+            if key not in entity:
+                continue
 
-    if schema_info.cast_columns:
-        for entity in entities:
-            for key in schema_info.nonvalid_underscore_properties:
-                # Remove invalid underscore properties (unneeded internals and user-created ones that the dataset
-                # sink would strip away in any case)
+            value = entity.get(key)
+            translated_key = schema_info.property_column_translation.get(key, key)
+
+            def cast_value(_value):
+                # Check if we need to transit decode this value
+                if isinstance(_value, str) and len(_value) > 1 and _value[0] == "~":
+                    prefix = _value[:2]
+                    if prefix in ["~r", "~u", "~:", "~b"]:
+                        # URI, NI, UUID, bytes, Nanosecond: just cast it to string without the prefix
+                        _value = _value[len(prefix):]
+                    elif prefix in ["~d", "~f"]:
+                        # Float or decimal
+                        _value = float(Decimal(_value[len(prefix):]))
+                    elif prefix == "̃~t":
+                        # Truncate nanoseconds to microseconds to be compatible with BQ
+                        _value = _value[len(prefix):]
+                        dt_int = datetime_parse(_value)
+                        _value = datetime_format(dt_int)
+                    else:
+                        # Unknown type, strip the prefix off
+                        _value = _value[len(prefix):]
+
+                return str(_value)
+
+            if value is not None and translated_key in schema_info.cast_columns:
+                if isinstance(value, dict):
+                    # Cast object values to string directly
+                    # TODO: should we transit decode stuff recursively first?
+                    value = json.dumps(value)
+                elif isinstance(value, list):
+                    # Check if this is a supported list
+                    if schema_info.bigquery_schema[translated_key].mode == "REPEATED":
+                        result = []
+                        for item in value:
+                            result.append(cast_value(item))
+                        value = result
+                    else:
+                        # Columns with mixed values we just serialize to json
+                        value = json.dumps(value)
+                else:
+                    value = cast_value(value)
+
+            if translated_key != key:
                 entity.pop(key, None)
 
-            for key in schema_info.property_column_translation:
-                # Translate properties->columns
-                if key not in entity:
-                    continue
-
-                value = entity.get(key)
-                translated_key = schema_info.property_column_translation.get(key, key)
-
-                def cast_value(_value):
-                    # Check if we need to transit decode this value
-                    if isinstance(_value, str) and len(_value) > 1 and _value[0] == "~":
-                        prefix = _value[:2]
-                        if prefix in ["~r", "~u", "~:", "~b"]:
-                            # URI, NI, UUID, bytes, Nanosecond: just cast it to string without the prefix
-                            _value = _value[len(prefix):]
-                        elif prefix in ["~d", "~f"]:
-                            # Float or decimal
-                            _value = float(Decimal(_value[len(prefix):]))
-                        elif prefix == "̃~t":
-                            # Truncate nanoseconds to microseconds to be compatible with BQ
-                            _value = _value[len(prefix):]
-                            dt_int = datetime_parse(_value)
-                            _value = datetime_format(dt_int)
-                        else:
-                            # Unknown type, strip the prefix off
-                            _value = _value[len(prefix):]
-
-                    return str(_value)
-
-                if value is not None and translated_key in schema_info.cast_columns:
-                    if isinstance(value, dict):
-                        # Cast object values to string directly
-                        # TODO: should we transit decode stuff recursively first?
-                        value = json.dumps(value)
-                    elif isinstance(value, list):
-                        # Check if this is a supported list
-                        if schema_info.bigquery_schema[translated_key].mode == "REPEATED":
-                            result = []
-                            for item in value:
-                                result.append(cast_value(item))
-                            value = result
-                        else:
-                            # Columns with mixed values we just serialize to json
-                            value = json.dumps(value)
-                    else:
-                        value = cast_value(value)
-
-                if translated_key != key:
-                    entity.pop(key, None)
-
-                entity[translated_key] = value
+            entity[translated_key] = value
 
     # Create a separate source table. The tables will be merged later.
     source_table = target_table + '_%s_%s_temp' % (sequence_id.replace("-", ""), request_id)
