@@ -525,10 +525,12 @@ def insert_entities_into_table_mt(table, entities):
 
 def insert_into_bigquery(target_table, entities, schema_info, request_id, sequence_id, multithreaded=False):
     # Remove irrelevant properties and translate property names and, if needed, values
+    logger.info("Properties to remove: %s" % str(schema_info.nonvalid_underscore_properties))
     for entity in entities:
         for key in schema_info.nonvalid_underscore_properties:
             # Remove invalid underscore properties (unneeded internals and user-created ones that the dataset
             # sink would strip away in any case)
+            logger.info("Removing key: %s" % key)
             entity.pop(key, None)
 
         for key in schema_info.property_column_translation:
