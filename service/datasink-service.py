@@ -398,7 +398,7 @@ def insert_entities_into_table(table, entities, wait_for_rows=True, prefix=''):
                     logger.info(f"{prefix}{len(chunk)} new rows have been added to table '%s'" % table)
                 else:
                     from pprint import pprint
-                    logger.error("Example entity:\n%s" % pprint(chunk))
+                    logger.error("Example entity:\n%s" % pprint(chunk[0]))
                     raise AssertionError(f"{prefix}Failed to insert json for table '%s':  %s" % (table, errors))
 
                 if ix == last_ix:
@@ -525,13 +525,12 @@ def insert_entities_into_table_mt(table, entities):
 
 def insert_into_bigquery(target_table, entities, schema_info, request_id, sequence_id, multithreaded=False):
     # Remove irrelevant properties and translate property names and, if needed, values
-    logger.info("Properties to remove: %s" % str(schema_info.nonvalid_underscore_properties))
     for entity in entities:
-        for key in schema_info.nonvalid_underscore_properties:
+        for key in entity:
             # Remove invalid underscore properties (unneeded internals and user-created ones that the dataset
             # sink would strip away in any case)
-            logger.info("Removing key: %s" % key)
-            entity.pop(key, None)
+            if key[0] == "_" and key not in schema_info.valid_internal_properties:
+                entity.pop(key, None)
 
         for key in schema_info.property_column_translation:
             # Translate properties->columns
