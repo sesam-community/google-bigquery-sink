@@ -18,7 +18,7 @@ from google.api_core.exceptions import GoogleAPICallError
 from decimal import Decimal
 from threading import RLock, Thread
 
-version = "1.0.1"
+version = "1.0.2"
 
 PIPE_CONFIG_TEMPLATE = """
 {
@@ -526,7 +526,7 @@ def insert_entities_into_table_mt(table, entities):
 def insert_into_bigquery(target_table, entities, schema_info, request_id, sequence_id, multithreaded=False):
     # Remove irrelevant properties and translate property names and, if needed, values
     for entity in entities:
-        for key in entity:
+        for key in list(entity.keys()):
             # Remove invalid underscore properties (unneeded internals and user-created ones that the dataset
             # sink would strip away in any case)
             if key[0] == "_" and key not in schema_info.valid_internal_properties:
