@@ -18,7 +18,7 @@ from google.api_core.exceptions import GoogleAPICallError
 from decimal import Decimal
 from threading import RLock, Thread
 
-version = "1.0.2"
+version = "1.0.4"
 
 PIPE_CONFIG_TEMPLATE = """
 {
@@ -198,6 +198,7 @@ class SchemaInfo:
     rows_seen = 0
     seen_field_types = {}
     nonvalid_underscore_properties = []
+    array_propery_filter_nulls = {}
     pipe_id = None
 
     valid_internal_properties = ["_id", "_updated", "_deleted"]
@@ -223,6 +224,7 @@ class SchemaInfo:
         _property_column_translation = {}
         _seen_field_types = {}
         _nonvalid_underscore_properties = {}
+        _array_propery_filter_nulls = {}
 
         for key, value in _entity_schema["properties"].items():
             if key[0] == "_" and key not in self.valid_internal_properties:
@@ -264,10 +266,25 @@ class SchemaInfo:
                     else:
                         field_type = field_types[0]["subtype"]
             else:
-                if "type" in value and value["type"] == "array" and value["items"]["type"] != "anyOf":
-                    # Array of single types -> mode:REPEATED, so the "real" data type resides in "items"
-                    value = value["items"]
-                    mode = "REPEATED"
+                if "type" in value and value["type"] == "array":
+                    if "type" in value["items"] and value["items"]["type"] != "anyOf":
+                        # Array of single types -> mode:REPEATED, so the "real" data type resides in "items"
+                        value = value["items"]
+                        mode = "REPEATED"
+                    elif key == "$ids" and "anyOf" in value["items"] and len(value["items"]["anyOf"]) == 2:
+                        # Another possibly special case; $ids array of single type + NULL - here we can drop any NULL
+                        # values when processing the entity
+                        has_null = [(ix, el) for ix, el in enumerate(value["items"]["anyOf"])
+                                    if el.get("type", "") == "null"]
+
+                        if has_null:
+                            if has_null[0][0] == 0:
+                                value = value["items"]["anyOf"][1]
+                            else:
+                                value = value["items"]["anyOf"][0]
+
+                            mode = "REPEATED"
+                            _array_propery_filter_nulls[translated_key] = True
 
                 if "subtype" not in value:
                     field_type = value["type"]
@@ -324,6 +341,7 @@ class SchemaInfo:
         self.property_column_translation = _property_column_translation
         self.seen_field_types = _seen_field_types
         self.nonvalid_underscore_properties = list(_nonvalid_underscore_properties.keys())
+        self.array_propery_filter_nulls = _array_propery_filter_nulls
 
 
 def count_rows_in_table(table, retries=0, timeout=None, prefix=''):
@@ -571,6 +589,9 @@ def insert_into_bigquery(target_table, entities, schema_info, request_id, sequen
                     if schema_info.bigquery_schema[translated_key].mode == "REPEATED":
                         result = []
                         for item in value:
+                            if item is None and translated_key in schema_info.array_propery_filter_nulls:
+                                # Array of single-value + NULL, we have to drop the NULLs as BQ doesn't support them
+                                continue
                             result.append(cast_value(item))
                         value = result
                     else:
