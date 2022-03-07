@@ -18,7 +18,7 @@ from google.api_core.exceptions import GoogleAPICallError
 from decimal import Decimal
 from threading import RLock, Thread
 
-version = "1.0.7"
+version = "1.0.8"
 
 PIPE_CONFIG_TEMPLATE = """
 {
@@ -585,18 +585,18 @@ def insert_into_bigquery(target_table, entities, schema_info, request_id, sequen
                     # TODO: should we transit decode stuff recursively first?
                     value = json.dumps(value)
                 elif isinstance(value, list):
+                    if len(value) > 2048:
+                        value = sorted(value)[:2048]
+
                     # Check if this is a supported list
                     if schema_info.bigquery_schema[translated_key].mode == "REPEATED":
                         result = []
                         # Truncate lists at 4096 to avoid a hanging insert, sort the list to make it deterministic
-                        if len(value) > 4096:
-                            value = sorted(value)[:4096]
-
-                        for item in value:
-                            if item is None and translated_key in schema_info.array_propery_filter_nulls:
+                        for litem in value:
+                            if litem is None and translated_key in schema_info.array_propery_filter_nulls:
                                 # Array of single-value + NULL, we have to drop the NULLs as BQ doesn't support them
                                 continue
-                            result.append(cast_value(item))
+                            result.append(cast_value(litem))
                         value = result
                     else:
                         # Columns with mixed values we just serialize to json
