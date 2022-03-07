@@ -6,6 +6,7 @@ import json
 import time
 from datetime import datetime, timezone, timedelta
 import os
+import sys
 import logging
 import threading
 from queue import Queue, Empty
@@ -18,7 +19,7 @@ from google.api_core.exceptions import GoogleAPICallError
 from decimal import Decimal
 from threading import RLock, Thread
 
-version = "1.0.9"
+version = "1.0.10"
 
 PIPE_CONFIG_TEMPLATE = """
 {
@@ -113,6 +114,27 @@ node_connection = sesamclient.Connection(node_url, jwt_auth_token=jwt_token)
 schema_cache = {}
 client_locks_lock = RLock()
 client_locks = {}
+
+
+def get_size(obj, seen=None):
+    """Recursively finds size of objects"""
+    size = sys.getsizeof(obj)
+    if seen is None:
+        seen = set()
+    obj_id = id(obj)
+    if obj_id in seen:
+        return 0
+    # Important mark as seen *before* entering recursion to gracefully handle
+    # self-referential objects
+    seen.add(obj_id)
+    if isinstance(obj, dict):
+        size += sum([get_size(v, seen) for v in obj.values()])
+        size += sum([get_size(k, seen) for k in obj.keys()])
+    elif hasattr(obj, '__dict__'):
+        size += get_size(obj.__dict__, seen)
+    elif hasattr(obj, '__iter__') and not isinstance(obj, (str, bytes, bytearray)):
+        size += sum([get_size(i, seen) for i in obj])
+    return size
 
 
 def datetime_as_int(dt):
@@ -410,6 +432,7 @@ def insert_entities_into_table(table, entities, wait_for_rows=True, prefix=''):
         for ix, chunk in enumerate(remaining_entities):
             try:
                 logger.info("%sInserting %s entities in table '%s'..." % (prefix, len(chunk), table))
+                logger.info("%sSize of chunk in bytes: '%s'..." % (prefix, get_size(chunk)))
                 row_ids = [e["_updated"] for e in chunk]
                 errors = client.insert_rows_json(table, chunk, row_ids=row_ids, timeout=30)
                 notfound_retries = 3
