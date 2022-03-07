@@ -697,9 +697,12 @@ def receiver():
     sequence_id = request.args.get('sequence_id', 0)
     request_id = request.args.get('request_id', 0)
 
-    _batch_size = request.args.get('batch_size')
-    if _batch_size is None:
-        _batch_size = config_batch_size
+    batch_size = request.args.get('batch_size')
+    try:
+        batch_size = int(batch_size)
+    except ValueError as e:
+        logger.warning("The 'batch_size' parameter was '%s', which is not an integer" % batch_size)
+        batch_size = config_batch_size
 
     request_pipe_id = request.args.get("pipe_id")
     if request_pipe_id is not None:
