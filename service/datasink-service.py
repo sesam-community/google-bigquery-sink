@@ -19,7 +19,12 @@ from google.api_core.exceptions import GoogleAPICallError
 from decimal import Decimal
 from threading import RLock, Thread
 
-version = "1.0.10"
+
+class ChunkTooBigException(Exception):
+    pass
+
+
+version = "1.0.11"
 
 PIPE_CONFIG_TEMPLATE = """
 {
@@ -431,8 +436,13 @@ def insert_entities_into_table(table, entities, wait_for_rows=True, prefix=''):
         last_ix = len(remaining_entities) - 1
         for ix, chunk in enumerate(remaining_entities):
             try:
+                chunksize = get_size(chunk)
+                logger.info("%sSize of chunk of %s entities in bytes: %s" % (prefix, len(chunk), chunksize))
+
+                if chunksize > 10000000:
+                    raise ChunkTooBigException("Chunk size '%s' is too big!" % chunksize)
+
                 logger.info("%sInserting %s entities in table '%s'..." % (prefix, len(chunk), table))
-                logger.info("%sSize of chunk in bytes: '%s'..." % (prefix, get_size(chunk)))
                 row_ids = [e["_updated"] for e in chunk]
                 errors = client.insert_rows_json(table, chunk, row_ids=row_ids, timeout=30)
                 notfound_retries = 3
@@ -479,6 +489,20 @@ def insert_entities_into_table(table, entities, wait_for_rows=True, prefix=''):
                 else:
                     # Fail for any other errors
                     raise ge
+            except ChunkTooBigException as ctb:
+                logger.info("%sCurrent batch is too big for table '%s', slicing it up..." % (prefix, table))
+
+                # Gather and split the remaining entities one more level
+                slices = int(len(chunk) / 2)
+                tmp = []
+                for c in remaining_entities[ix:]:
+                    tmp.extend(c)
+
+                remaining_entities = list(sliced(tmp, slices))
+                logger.info("%sTrying with new batch size for table '%s': %s for the %s "
+                            "remaining entities" % (prefix, table, len(remaining_entities[0]), len(tmp)))
+                # New loop
+                break
             except BaseException as e:
                 logger.exception("%sinsert_rows_json('%s') failed for unknown reasons!" % (prefix, table))
                 raise e
