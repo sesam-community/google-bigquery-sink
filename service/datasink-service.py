@@ -18,7 +18,7 @@ from google.api_core.exceptions import GoogleAPICallError
 from decimal import Decimal
 from threading import RLock, Thread
 
-version = "1.0.4"
+version = "1.0.5"
 
 PIPE_CONFIG_TEMPLATE = """
 {
@@ -796,10 +796,12 @@ class GlobalBootstrapper:
         for pipe in self.connection.get_pipes():
             pipes[pipe.id] = pipe
             if pipe.config["effective"].get("metadata", {}).get("global", False) is True:
-                if "infer_pipe_entity_types" in pipe.config["effective"] and \
-                        pipe.config["effective"]["infer_pipe_entity_types"] is False:
+                if "infer_pipe_entity_types" in pipe.config["original"] and \
+                        pipe.config["original"]["infer_pipe_entity_types"] is False:
                     # Skip creating pipes for globals that have no schema info
+                    logger.info("Skipping global '%s' because 'infer_pipe_entity_types' is set to false" % pipe.id)
                     continue
+                logger.info("Found global '%s'.." % pipe.id)
 
                 global_datasets.append(pipe.config.get("sink", {}).get("dataset", pipe.id))
 
