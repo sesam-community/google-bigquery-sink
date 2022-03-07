@@ -21,6 +21,7 @@ The receiver can take two parameters:
 
 * pipe_id - the pipe to use as source for the bigquery schema
 * target_table - the name of the table to write to
+* batch_size - maximum number of rows to insert via the bigquery client per operation, default 1000. Reduce it if you experience limit related errors or hanging client connections.
 
 Note that if 'pipe_id' is present in the URL then 'target_table' must be as well.
 
@@ -48,6 +49,8 @@ BOOTSTRAP_CONFIG_GROUP - the config group to generate pipes and systems in, if n
 BOOTSTRAP_INTERVAL - how often (in hours) to rerun the bootstrapping process - the default is 24
 
 BOOTSTRAP_RECREATE_PIPES - overwrite existing pipes and system when bootstrapping - mostly useful if the template has changed
+
+BATCH_SIZE - maximum number of rows to insert via the bigquery client per operation, default 1000. Reduce it if you experience limit related errors or hanging client connections.
 
 Note that if you set up the MS to bootstrap a node, you should name it in such a way that it will not be overwritten by the generated systems which all will start with "bigquery", for instance use the id "bootstrap-bigquery".
 

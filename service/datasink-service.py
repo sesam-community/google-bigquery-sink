@@ -700,7 +700,7 @@ def receiver():
     batch_size = request.args.get('batch_size')
     try:
         batch_size = int(batch_size)
-    except ValueError as e:
+    except TypeError as e:
         logger.warning("The 'batch_size' parameter was '%s', which is not an integer" % batch_size)
         batch_size = config_batch_size
 
@@ -890,8 +890,6 @@ class GlobalBootstrapper:
 
 
 if __name__ == '__main__':
-    global config_batch_size
-
     format_string = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 
     # Log to stdout, change to or add a (Rotating)FileHandler to log to a file
@@ -918,9 +916,12 @@ if __name__ == '__main__':
     try:
         config_batch_size = int(_batch_size)
         logger.info("Using BATCH_SIZE of %s" % config_batch_size)
-    except ValueError as e:
+    except TypeError as e:
         config_batch_size = 1000
-        logger.info("BATCH_SIZE '%s' is not an integer, falling back to 1000" % config_batch_size)
+        if _batch_size is None:
+            logger.info("BATCH_SIZE was not set, falling back to default of 1000")
+        else:
+            logger.info("BATCH_SIZE '%s' is not an integer, falling back to 1000" % _batch_size)
 
     if bootstrap_pipes is not False:
         if bq_table_prefix is None:
