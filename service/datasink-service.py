@@ -271,8 +271,8 @@ class SchemaInfo:
                         # Array of single types -> mode:REPEATED, so the "real" data type resides in "items"
                         value = value["items"]
                         mode = "REPEATED"
-                    elif key == "$ids" and "anyOf" in value["items"] and len(value["items"]["anyOf"]) == 2:
-                        # Another possibly special case; $ids array of single type + NULL - here we can drop any NULL
+                    elif "anyOf" in value["items"] and len(value["items"]["anyOf"]) == 2:
+                        # Another possibly special case; an array of single type + NULL - here we can drop any NULL
                         # values when processing the entity
                         has_null = [(ix, el) for ix, el in enumerate(value["items"]["anyOf"])
                                     if el.get("type", "") == "null"]
