@@ -18,7 +18,7 @@ from google.api_core.exceptions import GoogleAPICallError
 from decimal import Decimal
 from threading import RLock, Thread
 
-version = "1.0.8"
+version = "1.0.9"
 
 PIPE_CONFIG_TEMPLATE = """
 {
@@ -106,6 +106,7 @@ bootstrap_single_system = os.environ.get("BOOTSTRAP_SINGLE_SYSTEM", False)
 use_multithreaded = os.environ.get("MULTITHREADED", "true") in ["1", 1, "true", "True"]
 bootstrap_config_group = os.environ.get("BOOTSTRAP_CONFIG_GROUP", "analytics")
 bootstrap_interval = os.environ.get("BOOTSTRAP_INTERVAL", "24")
+config_batch_size = 1000
 
 node_connection = sesamclient.Connection(node_url, jwt_auth_token=jwt_token)
 
@@ -464,18 +465,17 @@ def insert_entities_into_table(table, entities, wait_for_rows=True, prefix=''):
         wait_for_rows_to_appear(entities, existing_count, table, timeout=120, prefix=prefix)
 
 
-def insert_entities_into_table_mt(table, entities):
+def insert_entities_into_table_mt(table, entities, batch_size=1000):
     # Multithreaded version of the insert code
     existing_count = count_rows_in_table(table, retries=3, timeout=30)
     logger.info("Row count before insert into table '%s' is: %s" % (table, existing_count))
 
-    partition_size = 1000
     workers = 50
     queue = Queue()
     futures = []
 
     # Fill up the queue with entity partitions
-    for partition in sliced(entities, partition_size):
+    for partition in sliced(entities, batch_size):
         queue.put(partition)
 
     running_threads = {}
@@ -541,7 +541,8 @@ def insert_entities_into_table_mt(table, entities):
         raise AssertionError("One or more threads failed to insert their partition, see the service log for details")
 
 
-def insert_into_bigquery(target_table, entities, schema_info, request_id, sequence_id, multithreaded=False):
+def insert_into_bigquery(target_table, entities, schema_info, request_id, sequence_id, multithreaded=False,
+                         batch_size=1000):
     # Remove irrelevant properties and translate property names and, if needed, values
     for entity in entities:
         for key in list(entity.keys()):
@@ -585,8 +586,8 @@ def insert_into_bigquery(target_table, entities, schema_info, request_id, sequen
                     # TODO: should we transit decode stuff recursively first?
                     value = json.dumps(value)
                 elif isinstance(value, list):
-                    if len(value) > 2048:
-                        value = sorted(value)[:2048]
+                    if len(value) > 4096:
+                        value = sorted(value)[:4096]
 
                     # Check if this is a supported list
                     if schema_info.bigquery_schema[translated_key].mode == "REPEATED":
@@ -623,7 +624,7 @@ def insert_into_bigquery(target_table, entities, schema_info, request_id, sequen
 
         # Upload test data to temp table
         if multithreaded:
-            insert_entities_into_table_mt(source_table, entities)
+            insert_entities_into_table_mt(source_table, entities, batch_size=batch_size)
         else:
             insert_entities_into_table(source_table, entities)
 
@@ -696,6 +697,10 @@ def receiver():
     sequence_id = request.args.get('sequence_id', 0)
     request_id = request.args.get('request_id', 0)
 
+    _batch_size = request.args.get('batch_size')
+    if _batch_size is None:
+        _batch_size = config_batch_size
+
     request_pipe_id = request.args.get("pipe_id")
     if request_pipe_id is not None:
         # If the pipe id is given as a param, then the target table should be too. Raise a Badrequest if not
@@ -734,7 +739,7 @@ def receiver():
 
             # Skip deleted entities if this is a full run - the target table will be empty so nothing will be deleted
             # anyway
-            entities = [e for e in entities if e.get("_deleted", False) is False]
+            entities = [ent for ent in entities if ent.get("_deleted", False) is False]
 
         if len(entities) > 0:
             if schema_info is None:
@@ -742,7 +747,7 @@ def receiver():
                 schema_cache[request_pipe_id] = schema_info
 
             insert_into_bigquery(request_target_table, entities, schema_info, request_id, sequence_id,
-                                 multithreaded=use_multithreaded)
+                                 multithreaded=use_multithreaded, batch_size=batch_size)
         else:
             logger.info("Skipping empty batch...")
 
@@ -882,6 +887,8 @@ class GlobalBootstrapper:
 
 
 if __name__ == '__main__':
+    global config_batch_size
+
     format_string = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 
     # Log to stdout, change to or add a (Rotating)FileHandler to log to a file
@@ -903,6 +910,14 @@ if __name__ == '__main__':
         logger.info("Running in multithreaded mode")
     else:
         logger.info("Running in single threaded mode")
+
+    _batch_size = os.environ.get("BATCH_SIZE")
+    try:
+        config_batch_size = int(_batch_size)
+        logger.info("Using BATCH_SIZE of %s" % config_batch_size)
+    except ValueError as e:
+        config_batch_size = 1000
+        logger.info("BATCH_SIZE '%s' is not an integer, falling back to 1000" % config_batch_size)
 
     if bootstrap_pipes is not False:
         if bq_table_prefix is None:
