@@ -24,7 +24,7 @@ class ChunkTooBigException(Exception):
     pass
 
 
-version = "1.0.11"
+version = "1.0.12"
 
 PIPE_CONFIG_TEMPLATE = """
 {
@@ -748,7 +748,8 @@ def receiver():
     try:
         batch_size = int(batch_size)
     except TypeError as e:
-        logger.warning("The 'batch_size' parameter was '%s', which is not an integer" % batch_size)
+        if batch_size is not None:
+            logger.warning("The 'batch_size' parameter was '%s', which is not an integer" % batch_size)
         batch_size = config_batch_size
 
     request_pipe_id = request.args.get("pipe_id")
