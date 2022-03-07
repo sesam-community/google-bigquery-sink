@@ -18,7 +18,7 @@ from google.api_core.exceptions import GoogleAPICallError
 from decimal import Decimal
 from threading import RLock, Thread
 
-version = "1.0.5"
+version = "1.0.7"
 
 PIPE_CONFIG_TEMPLATE = """
 {
@@ -588,6 +588,10 @@ def insert_into_bigquery(target_table, entities, schema_info, request_id, sequen
                     # Check if this is a supported list
                     if schema_info.bigquery_schema[translated_key].mode == "REPEATED":
                         result = []
+                        # Truncate lists at 4096 to avoid a hanging insert, sort the list to make it deterministic
+                        if len(value) > 4096:
+                            value = sorted(value)[:4096]
+
                         for item in value:
                             if item is None and translated_key in schema_info.array_propery_filter_nulls:
                                 # Array of single-value + NULL, we have to drop the NULLs as BQ doesn't support them
