@@ -67,7 +67,7 @@ SYSTEM_CONFIG_TEMPLATE = """
       "NODE_URL": "%(node_url)s",
       "BIGQUERY_TABLE_PREFIX": "%(table_prefix)s"
     },
-    "image": "sesam/sesam-bigquery:latest",
+    "image": "sesamcommunity/sesam-bigquery:latest",
     "memory": 1512,
     "port": 5000
   },
