@@ -69,7 +69,7 @@ Example config:
           "JWT_TOKEN": "$SECRET(bigquery-ms-jwt)",
           "NODE_URL": "https://your-sesam-service/api"
         },
-        "image": "sesam/sesam-bigquery:latest",
+        "image": "sesamcommunity/sesam-bigquery:latest",
         "memory": 1512,
         "port": 5000
       },
