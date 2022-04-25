@@ -641,7 +641,10 @@ def insert_into_bigquery(target_table, entities, schema_info, request_id, sequen
             if translated_key in schema_info.cast_columns:
                 if schema_info.bigquery_schema[translated_key].mode == "REPEATED":
                     if (not isinstance(value, list)):
-                        value = [value]
+                        if value is not None:
+                            value = [value]
+                        else:
+                            value = []
                 if isinstance(value, dict):
                     # Cast object values to string directly
                     # TODO: should we transit decode stuff recursively first?
