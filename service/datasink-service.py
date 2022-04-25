@@ -232,6 +232,7 @@ class SchemaInfo:
     valid_internal_properties = ["_id", "_updated", "_deleted"]
 
     def __init__(self, pipe_id):
+
         self.pipe_id = pipe_id
         self.pipe_schema_url = node_url + "/pipes/" + pipe_id + "/entity-types/sink"
 
@@ -282,10 +283,40 @@ class SchemaInfo:
             translated_key = s
             _property_column_translation[key] = translated_key
 
+            logger.debug("Processing field '%s'" % translated_key)
+            logger.debug("Value '%s'" % value)
+
+            if ("type" in value and value["type"] == "array") or ("anyOf" in value and len([v for v in value["anyOf"] if (v["type"] == "array")])):
+                # Contains Array in fist object level  -> mode:REPEATED
+                logger.debug("Array field '%s'" % translated_key)
+                _cast_columns.append(translated_key)
+                mode = "REPEATED"
+
             if "anyOf" in value:
-                field_types = [v for v in value["anyOf"] if v["type"] != "null"]
-                if len(field_types) > 1:
+                # Extract types from arrays and non-arrays and compare them. Cast to STRING if not the same
+
+                field_types = [v for v in value["anyOf"] if (v["type"] != "null" and v["type"] != "array")]
+                logger.debug("Field types '%s'" % field_types)
+                array_types = [x["items"] for x in [v for v in value["anyOf"] if (v["type"] == "array")] if (x["type"] != "null" and "anyOf" not in x["items"])]
+                logger.debug("Array types '%s'" % array_types)
+                if (len(array_types) > 0):
+                    field_types = field_types + array_types
+                array_any_types = [x["items"]["anyOf"] for x in [v for v in value["anyOf"] if (v["type"] == "array")] if (x["type"] != "null" and "anyOf" in x["items"])]
+                logger.debug("Array any types '%s'" % array_any_types)
+                if (len(array_any_types) > 0):
+                    field_types = field_types + array_any_types[0]
+
+                logger.debug("Field types '%s'" % field_types)
+
+                data_types = [f["type"] for f in field_types if (not "subtype" in f)]
+                subdata_types = [f["type"] + f["subtype"] for f in field_types if ("subtype" in f)]
+                if (len(subdata_types) > 0):
+                    data_types.extend(subdata_types)
+                data_types = list(set(data_types))
+
+                if len(data_types) > 1:
                     # More than one type in entity schema -> cast to string in sql schema
+                    logger.warning("More than one data type '%s' - defaulting to 'STRING'" % data_types)
                     field_type = "string"
                     _cast_columns.append(translated_key)
                 else:
@@ -294,26 +325,6 @@ class SchemaInfo:
                     else:
                         field_type = field_types[0]["subtype"]
             else:
-                if "type" in value and value["type"] == "array":
-                    if "type" in value["items"] and value["items"]["type"] != "anyOf":
-                        # Array of single types -> mode:REPEATED, so the "real" data type resides in "items"
-                        value = value["items"]
-                        mode = "REPEATED"
-                    elif "anyOf" in value["items"] and len(value["items"]["anyOf"]) == 2:
-                        # Another possibly special case; an array of single type + NULL - here we can drop any NULL
-                        # values when processing the entity
-                        has_null = [(ix, el) for ix, el in enumerate(value["items"]["anyOf"])
-                                    if el.get("type", "") == "null"]
-
-                        if has_null:
-                            if has_null[0][0] == 0:
-                                value = value["items"]["anyOf"][1]
-                            else:
-                                value = value["items"]["anyOf"][0]
-
-                            mode = "REPEATED"
-                            _array_propery_filter_nulls[translated_key] = True
-
                 if "subtype" not in value:
                     field_type = value["type"]
                 else:
@@ -628,6 +639,9 @@ def insert_into_bigquery(target_table, entities, schema_info, request_id, sequen
                 return str(_value)
 
             if value is not None and translated_key in schema_info.cast_columns:
+                if schema_info.bigquery_schema[translated_key].mode == "REPEATED":
+                    if (not isinstance(value, list)):
+                        value = [value]
                 if isinstance(value, dict):
                     # Cast object values to string directly
                     # TODO: should we transit decode stuff recursively first?
@@ -784,6 +798,7 @@ def receiver():
                 schema_info = SchemaInfo(request_pipe_id)
                 schema_cache[request_pipe_id] = schema_info
 
+                logger.info("Created schema '%s'..." % schema_info)
                 # Recreate the target table
                 logger.info("Recreating target table '%s'..." % request_target_table)
                 create_table(request_target_table, schema_info.bigquery_schema, replace=True)

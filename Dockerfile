@@ -42,9 +42,10 @@ rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 # Install pip
 RUN curl --fail -sSL https://bootstrap.pypa.io/get-pip.py | python3 && python3 -m pip install pip
 
+COPY requirements.txt requirements.txt
+RUN pip3 install -r requirements.txt
 COPY ./service /service
 WORKDIR /service
-RUN pip install -r requirements.txt
 EXPOSE 5000/tcp
 ENTRYPOINT ["python3"]
 CMD ["datasink-service.py"]
