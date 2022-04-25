@@ -638,7 +638,7 @@ def insert_into_bigquery(target_table, entities, schema_info, request_id, sequen
 
                 return str(_value)
 
-            if value is not None and translated_key in schema_info.cast_columns:
+            if translated_key in schema_info.cast_columns:
                 if schema_info.bigquery_schema[translated_key].mode == "REPEATED":
                     if (not isinstance(value, list)):
                         value = [value]
@@ -663,7 +663,7 @@ def insert_into_bigquery(target_table, entities, schema_info, request_id, sequen
                     else:
                         # Columns with mixed values we just serialize to json
                         value = json.dumps(value)
-                else:
+                elif value is not None:
                     value = cast_value(value)
 
             if translated_key != key:
