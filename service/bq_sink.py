@@ -186,13 +186,13 @@ def datetime_format(dt_int):
         raise ValueError("Integer %d is outside of valid datetime range" % (dt_int,))
 
 
-def create_table(table_id, schema, replace=False):
+def create_table(bq_client, table_id, schema, replace=False):
     try:
-        table = client.get_table(table_id)  # Make an API request.
+            table = bq_client.get_table(table_id)  # Make an API request.
         if replace:
             # Drop the table
             logger.info("Dropping table '%s'..." % table_id)
-            client.delete_table(table_id)
+            bq_client.delete_table(table_id)
         else:
             return table
     except NotFound:
@@ -201,14 +201,14 @@ def create_table(table_id, schema, replace=False):
 
     table_obj = bigquery.Table(table_id, schema=schema.values())
     logger.info("Creating table '%s'..." % table_id)
-    client.create_table(table_obj)
+    bq_client.create_table(table_obj)
 
     timeout = 60
     start_time = time.time()
     logger.info("Waiting for table '%s' to appear..." % table_id)
     while True:
         try:
-            table = client.get_table(table_id)
+            table = bq_client.get_table(table_id)
             logger.info("Table '%s' has appeared! Moving on.." % table_id)
             return table
         except NotFound:
@@ -231,7 +231,8 @@ class SchemaInfo:
 
     valid_internal_properties = ["_id", "_updated", "_deleted"]
 
-    def __init__(self, pipe_id):
+    def __init__(self, pipe_id, sesam_node_connection):
+        self.sesam_node_connection = sesam_node_connection
         self.pipe_id = pipe_id
         self.pipe_schema_url = node_url + "/pipes/" + pipe_id + "/entity-types/sink"
 
@@ -243,7 +244,7 @@ class SchemaInfo:
         self.update_schema()
 
     def update_schema(self):
-        r = node_connection.do_get_request(self.pipe_schema_url)
+        r = self.sesam_node_connection.do_get_request(self.pipe_schema_url)
         _entity_schema = r.json()
         _entity_schema["properties"].update(self.default_properties)
 
@@ -372,11 +373,11 @@ class SchemaInfo:
         self.array_propery_filter_nulls = _array_propery_filter_nulls
 
 
-def count_rows_in_table(table, retries=0, timeout=None, prefix=''):
+def count_rows_in_table(bq_client, table, retries=0, timeout=None, prefix=''):
     while True:
         try:
             logger.info("%scounting rows in table '%s'..." % (prefix, table))
-            query_job = client.query(f'SELECT COUNT(*) FROM `{table}`', timeout=timeout)
+            query_job = bq_client.query(f'SELECT COUNT(*) FROM `{table}`', timeout=timeout)
             result = query_job.result(timeout=timeout)
             count = [item[0] for item in result][0]
             logger.info("%sRow count for table '%s' is: %s" % (prefix, table, count))
@@ -394,11 +395,11 @@ def count_rows_in_table(table, retries=0, timeout=None, prefix=''):
                 raise RuntimeError(msg)
 
 
-def wait_for_rows_to_appear(entities, existing_count, table, timeout=60, prefix=''):
+def wait_for_rows_to_appear(bq_client, entities, existing_count, table, timeout=60, prefix=''):
     start_time = time.time()
     while True:
         # Loop until count includes the new entities
-        count = count_rows_in_table(table, retries=3, timeout=5, prefix=prefix)
+        count = count_rows_in_table(bq_client, table, retries=3, timeout=5, prefix=prefix)
 
         if (count - existing_count) == len(entities):
             logger.info("%sRow count for table '%s' after inserting all "
@@ -417,11 +418,11 @@ def wait_for_rows_to_appear(entities, existing_count, table, timeout=60, prefix=
         time.sleep(5)
 
 
-def insert_entities_into_table(table, entities, wait_for_rows=True, prefix=''):
+def insert_entities_into_table(bq_client, table, entities, wait_for_rows=True, prefix=''):
     existing_count = 0
     if wait_for_rows:
         try:
-            existing_count = count_rows_in_table(table, retries=3, timeout=5, prefix=prefix)
+            existing_count = count_rows_in_table(bq_client, table, retries=3, timeout=5, prefix=prefix)
         except BaseException as e:
             logger.warning("%sFailed to get row count from table '%s" % (prefix, table))
 
@@ -444,7 +445,7 @@ def insert_entities_into_table(table, entities, wait_for_rows=True, prefix=''):
 
                 logger.info("%sInserting %s entities in table '%s'..." % (prefix, len(chunk), table))
                 row_ids = [e["_updated"] for e in chunk]
-                errors = client.insert_rows_json(table, chunk, row_ids=row_ids, timeout=30)
+                errors = bq_client.insert_rows_json(table, chunk, row_ids=row_ids, timeout=30)
                 notfound_retries = 3
                 if not errors:
                     logger.info(f"{prefix}{len(chunk)} new rows have been added to table '%s'" % table)
@@ -509,12 +510,12 @@ def insert_entities_into_table(table, entities, wait_for_rows=True, prefix=''):
 
     if wait_for_rows:
         logger.info("%sVerifying number of rows inserted into '%s'..." % (prefix, table))
-        wait_for_rows_to_appear(entities, existing_count, table, timeout=120, prefix=prefix)
+        wait_for_rows_to_appear(bq_client, entities, existing_count, table, timeout=120, prefix=prefix)
 
 
-def insert_entities_into_table_mt(table, entities, batch_size=1000):
+def insert_entities_into_table_mt(bq_client, table, entities, batch_size=1000):
     # Multithreaded version of the insert code
-    existing_count = count_rows_in_table(table, retries=3, timeout=30)
+    existing_count = count_rows_in_table(bq_client, table, retries=3, timeout=30)
     logger.info("Row count before insert into table '%s' is: %s" % (table, existing_count))
 
     workers = 50
@@ -544,7 +545,7 @@ def insert_entities_into_table_mt(table, entities, batch_size=1000):
                 logger.info("%sinsert_partition(): inserting a partition of size "
                             "%s to table '%s'" % (prefix, len(current_partition), table))
 
-                insert_entities_into_table(table, current_partition, wait_for_rows=False, prefix=prefix)
+                insert_entities_into_table(bq_client, table, current_partition, wait_for_rows=False, prefix=prefix)
 
                 logger.info("%sDone, terminating.." % prefix)
                 queue.task_done()
@@ -579,7 +580,7 @@ def insert_entities_into_table_mt(table, entities, batch_size=1000):
     if not failed:
         # All futures completed successfully, wait until all the rows have appeared
         logger.info("Verifying row count for target table '%s'.." % table)
-        wait_for_rows_to_appear(entities, existing_count, table, timeout=120)
+        wait_for_rows_to_appear(bq_client, entities, existing_count, table, timeout=120)
         elapsed_time = time.time() - starttime
         num_entities = len(entities)
         logger.info("Finished inserting %s rows in %s secs (%1f rows/sec)" % (num_entities, elapsed_time,
@@ -588,7 +589,7 @@ def insert_entities_into_table_mt(table, entities, batch_size=1000):
         raise AssertionError("One or more threads failed to insert their partition, see the service log for details")
 
 
-def insert_into_bigquery(target_table, entities, schema_info, request_id, sequence_id, multithreaded=False,
+def insert_into_bigquery(bq_client, target_table, entities, schema_info, request_id, sequence_id, multithreaded=False,
                          batch_size=1000):
     # Remove irrelevant properties and translate property names and, if needed, values
     for entity in entities:
@@ -662,18 +663,18 @@ def insert_into_bigquery(target_table, entities, schema_info, request_id, sequen
 
     try:
         # Create temp table
-        create_table(source_table, schema_info.bigquery_schema, replace=True)
+        create_table(bq_client, source_table, schema_info.bigquery_schema, replace=True)
 
         existing_count = [item[0] for item in
-                          client.query(f'SELECT COUNT(*) FROM `{target_table}`').result()][0]
+                          bq_client.query(f'SELECT COUNT(*) FROM `{target_table}`').result()][0]
 
         logger.info("Row count before merge to table '%s' was: %s" % (target_table, existing_count))
 
         # Upload test data to temp table
         if multithreaded:
-            insert_entities_into_table_mt(source_table, entities, batch_size=batch_size)
+            insert_entities_into_table_mt(bq_client, source_table, entities, batch_size=batch_size)
         else:
-            insert_entities_into_table(source_table, entities)
+            insert_entities_into_table(bq_client, source_table, entities)
 
         # Create MERGE query
         # Make schema into array of strings
@@ -704,11 +705,11 @@ def insert_into_bigquery(target_table, entities, schema_info, request_id, sequen
         """
 
         # Perform query and await result
-        query_job = client.query(merge_query)
+        query_job = bq_client.query(merge_query)
         query_job.result()
 
         existing_count = [item[0] for item in
-                          client.query(f'SELECT COUNT(*) FROM `{target_table}`').result()][0]
+                          bq_client.query(f'SELECT COUNT(*) FROM `{target_table}`').result()][0]
 
         logger.info("Row count after merge to table '%s' is: %s" % (target_table, existing_count))
     except BaseException as e:
@@ -717,7 +718,7 @@ def insert_into_bigquery(target_table, entities, schema_info, request_id, sequen
     finally:
         try:
             logger.info("Deleting temp table '%s'" % source_table)
-            client.delete_table(source_table)
+            bq_client.delete_table(source_table)
         except BaseException as e:
             logger.exception("Failed to drop temp table '%s'" % source_table)
 
@@ -726,25 +727,22 @@ def insert_into_bigquery(target_table, entities, schema_info, request_id, sequen
 def root():
     return Response(status=200, response="I am Groot!")
 
+def do_receiver_request(entities, request_args, bq_client, sesam_node_connection):
+    # IS-12436: unit-testable version of old receiver() method
 
-@app.route('/receiver', methods=['POST'])
-def receiver():
-    # get entities from request and write each of them to a file
-    entities = request.json
-
-    is_full = request.args.get('is_full', "false")
+    is_full = request_args.get('is_full', "false")
     is_full = (is_full.lower() == "true" and True) or False
 
-    is_first = request.args.get('is_first', "false")
+    is_first = request_args.get('is_first', "false")
     is_first = (is_first.lower() == "true" and True) or False
 
-    is_last = request.args.get('is_last', "false")
+    is_last = request_args.get('is_last', "false")
     is_last = (is_last.lower() == "true" and True) or False
 
-    sequence_id = request.args.get('sequence_id', 0)
-    request_id = request.args.get('request_id', 0)
+    sequence_id = request_args.get('sequence_id', 0)
+    request_id = request_args.get('request_id', 0)
 
-    batch_size = request.args.get('batch_size')
+    batch_size = request_args.get('batch_size')
     try:
         batch_size = int(batch_size)
     except TypeError as e:
@@ -752,10 +750,10 @@ def receiver():
             logger.warning("The 'batch_size' parameter was '%s', which is not an integer" % batch_size)
         batch_size = config_batch_size
 
-    request_pipe_id = request.args.get("pipe_id")
+    request_pipe_id = request_args.get("pipe_id")
     if request_pipe_id is not None:
         # If the pipe id is given as a param, then the target table should be too. Raise a Badrequest if not
-        request_target_table = request.args.get("target_table")
+        request_target_table = request_args.get("target_table")
         if request_target_table is None:
             raise BadRequest("If pipe_id is used as a parameter, then target_table needs to be provided as a "
                              "parameter as well")
@@ -781,12 +779,12 @@ def receiver():
 
                 logger.info("Refreshing entity schema from pipe '%s'..." % request_pipe_id)
                 schema_cache.pop(request_pipe_id, None)
-                schema_info = SchemaInfo(request_pipe_id)
+                schema_info = SchemaInfo(request_pipe_id, sesam_node_connection)
                 schema_cache[request_pipe_id] = schema_info
 
                 # Recreate the target table
                 logger.info("Recreating target table '%s'..." % request_target_table)
-                create_table(request_target_table, schema_info.bigquery_schema, replace=True)
+                create_table(bq_client, request_target_table, schema_info.bigquery_schema, replace=True)
 
             # Skip deleted entities if this is a full run - the target table will be empty so nothing will be deleted
             # anyway
@@ -797,7 +795,7 @@ def receiver():
                 schema_info = SchemaInfo(request_pipe_id)
                 schema_cache[request_pipe_id] = schema_info
 
-            insert_into_bigquery(request_target_table, entities, schema_info, request_id, sequence_id,
+            insert_into_bigquery(bq_client, request_target_table, entities, schema_info, request_id, sequence_id,
                                  multithreaded=use_multithreaded, batch_size=batch_size)
         else:
             logger.info("Skipping empty batch...")
@@ -820,6 +818,11 @@ def receiver():
     # create the response
     return Response("Thanks!", mimetype='text/plain')
 
+@app.route('/receiver', methods=['POST'])
+def receiver():
+    entities = request.json
+
+    do_receiver_request(entities, request.args, bq_client=client, sesam_node_connection=node_connection)
 
 class GlobalBootstrapper:
 

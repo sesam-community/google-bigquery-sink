@@ -1,5 +1,5 @@
 FROM ubuntu:20.04
-MAINTAINER Mikkel Marensium Bakken "mikkel.bakken@sesam.io"
+MAINTAINER Tom Bech "tom.bech@sesam.io"
 
 # Add locales package and set locale config
 RUN \
@@ -47,4 +47,4 @@ WORKDIR /service
 RUN pip install -r requirements.txt
 EXPOSE 5000/tcp
 ENTRYPOINT ["python3"]
-CMD ["datasink-service.py"]
+CMD ["bq_sink.py"]
