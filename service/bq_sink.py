@@ -78,24 +78,8 @@ SYSTEM_CONFIG_TEMPLATE = """
 """
 
 EPOCH = datetime.utcfromtimestamp(0)  # NOTE: this is a datetime with tzinfo=None
-
-if 'GOOGLE_APPLICATION_CREDENTIALS' not in os.environ:
-    # Local dev env for mikkel
-    credentials_path = '/home/mikkel/Desktop/BigQueryMicroservice/BigQueryMicroservice/SmallScale/bigquery-microservice-8767565ff502.json'
-
-    if not os.path.exists(credentials_path):
-        # Local dev env for tom
-        credentials_path = '/home/tomb/Downloads/bigquery-microservice-58c39f7392e7.json'
-
-    os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = credentials_path
-else:
-    # Dev env in the cloud
-    credentials_content = os.environ['GOOGLE_APPLICATION_CREDENTIALS']
-    with open("/tmp/bigquery-microservice-58c39f7392e7.json", "w") as outfile:
-        outfile.write(credentials_content)
-    os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = "/tmp/bigquery-microservice-58c39f7392e7.json"
-
-client = bigquery.Client()
+client = None
+node_connection = None
 
 app = Flask(__name__)
 
@@ -114,7 +98,6 @@ bootstrap_config_group = os.environ.get("BOOTSTRAP_CONFIG_GROUP", "analytics")
 bootstrap_interval = os.environ.get("BOOTSTRAP_INTERVAL", "24")
 config_batch_size = 1000
 
-node_connection = sesamclient.Connection(node_url, jwt_auth_token=jwt_token)
 
 schema_cache = {}
 client_locks_lock = RLock()
@@ -188,7 +171,7 @@ def datetime_format(dt_int):
 
 def create_table(bq_client, table_id, schema, replace=False):
     try:
-            table = bq_client.get_table(table_id)  # Make an API request.
+        table = bq_client.get_table(table_id)  # Make an API request.
         if replace:
             # Drop the table
             logger.info("Dropping table '%s'..." % table_id)
@@ -234,7 +217,7 @@ class SchemaInfo:
     def __init__(self, pipe_id, sesam_node_connection):
         self.sesam_node_connection = sesam_node_connection
         self.pipe_id = pipe_id
-        self.pipe_schema_url = node_url + "/pipes/" + pipe_id + "/entity-types/sink"
+        self.pipe_schema_url = sesam_node_connection.sesamapi_base_url + "pipes/" + pipe_id + "/entity-types/sink"
 
         self.default_properties = {
             "_deleted": {"type": "boolean"},
@@ -682,7 +665,8 @@ def insert_into_bigquery(bq_client, target_table, entities, schema_info, request
         for ele in schema_info.bigquery_schema.values():
             schema_arr.append("`" + ele.name + "`")
 
-        # Merge temp table and target table
+        # Merge temp table and target table - NOTE: if you change the formatting of this query you will need to
+        # change the unit tests as well
         merge_query = f"""
         MERGE `{target_table}` T
         USING
@@ -726,6 +710,7 @@ def insert_into_bigquery(bq_client, target_table, entities, schema_info, request
 @app.route('/', methods=['GET'])
 def root():
     return Response(status=200, response="I am Groot!")
+
 
 def do_receiver_request(entities, request_args, bq_client, sesam_node_connection):
     # IS-12436: unit-testable version of old receiver() method
@@ -792,7 +777,7 @@ def do_receiver_request(entities, request_args, bq_client, sesam_node_connection
 
         if len(entities) > 0:
             if schema_info is None:
-                schema_info = SchemaInfo(request_pipe_id)
+                schema_info = SchemaInfo(request_pipe_id, sesam_node_connection)
                 schema_cache[request_pipe_id] = schema_info
 
             insert_into_bigquery(bq_client, request_target_table, entities, schema_info, request_id, sequence_id,
@@ -809,6 +794,7 @@ def do_receiver_request(entities, request_args, bq_client, sesam_node_connection
             logger.info("I saw %s rows during this run" % schema_info.rows_seen)
     except BaseException as e:
         logger.exception("Something went wrong")
+        raise e
         raise BadRequest(f"Something went wrong! {str(e)}")
     finally:
         with client_locks_lock:
@@ -941,6 +927,25 @@ class GlobalBootstrapper:
 
 
 if __name__ == '__main__':
+    if 'GOOGLE_APPLICATION_CREDENTIALS' not in os.environ:
+        # Local dev env for mikkel
+        credentials_path = '/home/mikkel/Desktop/BigQueryMicroservice/BigQueryMicroservice/SmallScale/bigquery-microservice-8767565ff502.json'
+
+        if not os.path.exists(credentials_path):
+            # Local dev env for tom
+            credentials_path = '/home/tomb/Downloads/bigquery-microservice-58c39f7392e7.json'
+
+        os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = credentials_path
+    else:
+        # Dev env in the cloud
+        credentials_content = os.environ['GOOGLE_APPLICATION_CREDENTIALS']
+        with open("/tmp/bigquery-microservice-58c39f7392e7.json", "w") as outfile:
+            outfile.write(credentials_content)
+        os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = "/tmp/bigquery-microservice-58c39f7392e7.json"
+
+    client = bigquery.Client()
+    node_connection = sesamclient.Connection(node_url, jwt_auth_token=jwt_token)
+
     format_string = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 
     # Log to stdout, change to or add a (Rotating)FileHandler to log to a file
