@@ -4,7 +4,7 @@ import werkzeug.exceptions
 from google.cloud import bigquery
 from nose.tools import assert_true, assert_equal, assert_is_not_none, assert_false, assert_in, assert_is_none
 
-from service.bq_sink import do_receiver_request, count_rows_in_table
+from service.bq_sink import do_receiver_request, count_rows_in_table, SchemaInfo
 
 assert_equal.__self__.maxDiff = None
 
@@ -388,3 +388,286 @@ def test_happy_day_test():
 
     assert_equal(expected_entities, table_entities)
 
+
+def test_insert_array_test():
+    # Test inserting array fields
+    node_config = [{
+        "_id": "global-pipe",
+        "metadata": {
+            "global": True
+        }
+    }]
+
+    node_entity_types = {}
+    node_entity_types["global-pipe"] = {
+        "$id": "/api/pipes/global-pipe/entity-types/sink",
+        "$schema": "http://json-schema.org/schema#",
+        "additionalProperties": True,
+        "properties": {
+            "$ids": {
+                "items": {
+                    "metadata": {
+                        "namespaces": [
+                            "global-pipe"
+                        ]
+                    },
+                    "pattern": "^\\~:global\\-pipe:",
+                    "subtype": "ni",
+                    "type": "string"
+                },
+                "type": "array"
+            },
+            "_deleted": {
+                "type": "boolean"
+            },
+            "_id": {
+                "type": "string"
+            },
+            "_updated": {
+                "type": "integer"
+            },
+            "global-pipe:FOO": {
+                "items": {
+                    "subtype": "decimal",
+                    "type": "string"
+                },
+                "type": "array"
+            },
+        }
+    }
+
+    connection = TestableSesamConnection(node_config, entity_pipe_schemas=node_entity_types)
+    bq_client = TestableBQClient()
+
+    entities = [
+        {"_id": "1", "_updated": 0, "_deleted": False, "global-pipe:FOO": ["1", "1.1"]},
+        {"_id": "2", "_updated": 1, "_deleted": False, "global-pipe:FOO": ["2", "2.1"]},
+        {"_id": "3", "_updated": 2, "_deleted": False, "global-pipe:FOO": ["3", "3.1"]},
+    ]
+
+    target_table = "my-project.my-dataset.targettable"
+
+    # Full first run
+    params = {
+        "pipe_id": "global-pipe",
+        "target_table": target_table,
+        "is_full": "true",
+        "is_first": "true",
+        "is_last": "true",
+        "sequence_id": "0",
+        "request_id": "0",
+        "batch_size": 1000
+    }
+
+    do_receiver_request(entities, params, bq_client, connection)
+
+    num_rows = count_rows_in_table(bq_client, target_table)
+    assert_equal(3, num_rows)
+
+    expected_entities = [
+        {"_id": "1", "_updated": 0, "_deleted": False, "global_pipe__foo": ["1", "1.1"]},
+        {"_id": "2", "_updated": 1, "_deleted": False, "global_pipe__foo": ["2", "2.1"]},
+        {"_id": "3", "_updated": 2, "_deleted": False, "global_pipe__foo": ["3", "3.1"]},
+    ]
+
+    table_entities = bq_client.get_table(target_table)
+
+    assert_equal(expected_entities, table_entities)
+
+    entities = [
+        {"_id": "1", "_updated": 3, "_deleted": False, "global-pipe:FOO": ["1", "1.2"]},
+        {"_id": "2", "_updated": 4, "_deleted": True, "global-pipe:FOO": ["2", "2.2"]},
+        {"_id": "3", "_updated": 5, "_deleted": False, "global-pipe:FOO": ["3", "3.2"]},
+    ]
+
+    # Delta
+    params = {
+        "pipe_id": "global-pipe",
+        "target_table": target_table,
+        "is_full": "false",
+        "is_first": "true",
+        "is_last": "true",
+        "sequence_id": "1",
+        "request_id": "1",
+        "batch_size": 1000
+    }
+
+    do_receiver_request(entities, params, bq_client, connection)
+
+    num_rows = count_rows_in_table(bq_client, target_table)
+    assert_equal(2, num_rows)
+
+    expected_entities = [
+        {"_id": "1", "_updated": 3, "_deleted": False, "global_pipe__foo": ["1", "1.2"]},
+        {"_id": "3", "_updated": 5, "_deleted": False, "global_pipe__foo": ["3", "3.2"]},
+    ]
+
+    table_entities = bq_client.get_table(target_table)
+
+    assert_equal(expected_entities, table_entities)
+
+
+def test_schema_generation():
+    # Test schema generation
+    node_config = [{
+        "_id": "global-pipe",
+        "metadata": {
+            "global": True
+        }
+    }]
+
+    node_entity_types = {}
+    node_entity_types["global-pipe"] = {
+        "$id": "/api/pipes/global-pipe/entity-types/sink",
+        "$schema": "http://json-schema.org/schema#",
+        "additionalProperties": True,
+        "properties": {
+            "$ids": {
+                "items": {
+                    "metadata": {
+                        "namespaces": [
+                            "global-pipe"
+                        ]
+                    },
+                    "pattern": "^\\~:global\\-pipe:",
+                    "subtype": "ni",
+                    "type": "string"
+                },
+                "type": "array"
+            },
+            "_deleted": {
+                "type": "boolean"
+            },
+            "_id": {
+                "type": "string"
+            },
+            "_updated": {
+                "type": "integer"
+            },
+            "description": {
+              "type": "string"
+            },
+            "global-pipe:bar-code": {
+              "anyOf": [
+                {
+                  "subtype": "decimal",
+                  "type": "string"
+                },
+                {
+                  "items": {
+                    "subtype": "decimal",
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              ]
+            },
+            "zendesk-user:user_fields": {
+                "additionalProperties": True,
+                "properties": {},
+                "type": "object"
+            },
+            "global-user:organization_id-ni": {
+              "metadata": {
+                "namespaces": [
+                  "global-organization"
+                ]
+              },
+              "pattern": "^\\~:global\\-organization:",
+              "subtype": "ni",
+              "type": "string"
+            },
+            "global-pipe:some_flag": {
+              "type": "boolean"
+            },
+            "global-person:department-name": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "string"
+                }
+              ]
+            },
+            "global-pipe:FOO": {
+                "items": {
+                    "subtype": "decimal",
+                    "type": "string"
+                },
+                "type": "array"
+            },
+        }
+    }
+
+    connection = TestableSesamConnection(node_config, entity_pipe_schemas=node_entity_types)
+
+    schema = SchemaInfo("global-pipe", connection)
+
+    assert_equal(schema.pipe_schema_url, "http://localhost:9042/api/pipes/global-pipe/entity-types/sink")
+
+    assert_equal(schema.cast_columns, ['_ids', 'global_pipe__bar_code', 'global_pipe__foo',
+                                       'global_user__organization_id_ni', 'zendesk_user__user_fields'])
+
+    translated_properties = {
+        '$ids': '_ids',
+        '_deleted': '_deleted',
+        '_id': '_id',
+        '_updated': '_updated',
+        'description': 'description',
+        'global-pipe:bar-code': 'global_pipe__bar_code',
+        'zendesk-user:user_fields': 'zendesk_user__user_fields',
+        'global-user:organization_id-ni': 'global_user__organization_id_ni',
+        'global-pipe:some_flag': 'global_pipe__some_flag',
+        'global-person:department-name': 'global_person__department_name',
+        'global-pipe:FOO': 'global_pipe__foo'
+    }
+    assert_equal(schema.property_column_translation, translated_properties)
+
+    assert_equal(schema.bigquery_schema["_ids"].mode, "REPEATED")
+    assert_equal(schema.bigquery_schema["_ids"].is_nullable, False)
+    assert_equal(schema.bigquery_schema["_ids"].field_type, "STRING")
+
+    assert_equal(schema.bigquery_schema["_deleted"].mode, "NULLABLE")
+    assert_equal(schema.bigquery_schema["_deleted"].is_nullable, True)
+    assert_equal(schema.bigquery_schema["_deleted"].field_type, "BOOLEAN")
+
+    assert_equal(schema.bigquery_schema["_id"].mode, "NULLABLE")
+    assert_equal(schema.bigquery_schema["_id"].is_nullable, True)
+    assert_equal(schema.bigquery_schema["_id"].field_type, "STRING")
+
+    assert_equal(schema.bigquery_schema["_updated"].mode, "NULLABLE")
+    assert_equal(schema.bigquery_schema["_updated"].is_nullable, True)
+    assert_equal(schema.bigquery_schema["_updated"].field_type, "INTEGER")
+
+    assert_equal(schema.bigquery_schema["description"].mode, "NULLABLE")
+    assert_equal(schema.bigquery_schema["description"].is_nullable, True)
+    assert_equal(schema.bigquery_schema["description"].field_type, "STRING")
+
+    assert_equal(schema.bigquery_schema["global_pipe__bar_code"].mode, "NULLABLE")
+    assert_equal(schema.bigquery_schema["global_pipe__bar_code"].is_nullable, True)
+    assert_equal(schema.bigquery_schema["global_pipe__bar_code"].field_type, "STRING")
+
+    assert_equal(schema.bigquery_schema["zendesk_user__user_fields"].mode, "NULLABLE")
+    assert_equal(schema.bigquery_schema["zendesk_user__user_fields"].is_nullable, True)
+    assert_equal(schema.bigquery_schema["zendesk_user__user_fields"].field_type, "STRING")
+
+    assert_equal(schema.bigquery_schema["zendesk_user__user_fields"].mode, "NULLABLE")
+    assert_equal(schema.bigquery_schema["zendesk_user__user_fields"].is_nullable, True)
+    assert_equal(schema.bigquery_schema["zendesk_user__user_fields"].field_type, "STRING")
+
+    assert_equal(schema.bigquery_schema["global_user__organization_id_ni"].mode, "NULLABLE")
+    assert_equal(schema.bigquery_schema["global_user__organization_id_ni"].is_nullable, True)
+    assert_equal(schema.bigquery_schema["global_user__organization_id_ni"].field_type, "STRING")
+
+    assert_equal(schema.bigquery_schema["global_pipe__some_flag"].mode, "NULLABLE")
+    assert_equal(schema.bigquery_schema["global_pipe__some_flag"].is_nullable, True)
+    assert_equal(schema.bigquery_schema["global_pipe__some_flag"].field_type, "BOOLEAN")
+
+    assert_equal(schema.bigquery_schema["global_person__department_name"].mode, "NULLABLE")
+    assert_equal(schema.bigquery_schema["global_person__department_name"].is_nullable, True)
+    assert_equal(schema.bigquery_schema["global_person__department_name"].field_type, "STRING")
+
+    assert_equal(schema.bigquery_schema["global_pipe__foo"].mode, "REPEATED")
+    assert_equal(schema.bigquery_schema["global_pipe__foo"].is_nullable, False)
+    assert_equal(schema.bigquery_schema["global_pipe__foo"].field_type, "BIGNUMERIC")
