@@ -1,19 +1,8 @@
-name: SesamCommunity CI&CD
-
+name: Push latest after PR merge
 on:
-  pull_request:
   push:
-    paths-ignore:
-      - '**.md'
-      - '**.rst'
     branches:
-      - '**'
-    tags-ignore:
-      - '**'
-  release:
-    types: [published]
-
-
+      - master
 jobs:
   build:
     runs-on: ubuntu-latest
