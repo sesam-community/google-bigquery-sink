@@ -266,10 +266,47 @@ class SchemaInfo:
             translated_key = s
             _property_column_translation[key] = translated_key
 
+            logger.debug("Processing field '%s'" % translated_key)
+            logger.debug("Value '%s'" % value)
+
+            if ("type" in value and value["type"] == "array") or \
+                    ("anyOf" in value and len([v for v in value["anyOf"] if (v["type"] == "array")])):
+                # Contains Array in fist object level  -> mode:REPEATED
+                logger.debug("Array field '%s'" % translated_key)
+                _cast_columns.append(translated_key)
+                mode = "REPEATED"
+
             if "anyOf" in value:
-                field_types = [v for v in value["anyOf"] if v["type"] != "null"]
-                if len(field_types) > 1:
+                # Extract types from arrays and non-arrays and compare them. Cast to STRING if not the same
+                field_types = [v for v in value["anyOf"] if (v["type"] != "null" and v["type"] != "array")]
+                logger.debug("Field types '%s'" % field_types)
+
+                array_types = [x["items"] for x in [v for v in value["anyOf"] if (v["type"] == "array")]
+                               if (x["type"] != "null" and "anyOf" not in x["items"])]
+                logger.debug("Array types '%s'" % array_types)
+
+                if len(array_types) > 0:
+                    field_types = field_types + array_types
+
+                array_any_types = [x["items"]["anyOf"] for x in [v for v in value["anyOf"] if (v["type"] == "array")]
+                                   if (x["type"] != "null" and "anyOf" in x["items"])]
+                logger.debug("Array any types '%s'" % array_any_types)
+
+                if len(array_any_types) > 0:
+                    field_types = field_types + array_any_types[0]
+
+                logger.debug("Field types '%s'" % field_types)
+
+                data_types = [f["type"] for f in field_types if ("subtype" not in f)]
+                subdata_types = [f["type"] + f["subtype"] for f in field_types if ("subtype" in f)]
+
+                if len(subdata_types) > 0:
+                    data_types.extend(subdata_types)
+                data_types = list(set(data_types))
+
+                if len(data_types) > 1:
                     # More than one type in entity schema -> cast to string in sql schema
+                    logger.warning("More than one data type '%s' - defaulting to 'STRING'" % data_types)
                     field_type = "string"
                     _cast_columns.append(translated_key)
                 else:
@@ -611,7 +648,14 @@ def insert_into_bigquery(bq_client, target_table, entities, schema_info, request
 
                 return str(_value)
 
-            if value is not None and translated_key in schema_info.cast_columns:
+            if translated_key in schema_info.cast_columns:
+                if schema_info.bigquery_schema[translated_key].mode == "REPEATED":
+                    if not isinstance(value, list):
+                        if value is not None:
+                            value = [value]
+                        else:
+                            value = []
+
                 if isinstance(value, dict):
                     # Cast object values to string directly
                     # TODO: should we transit decode stuff recursively first?
@@ -633,7 +677,7 @@ def insert_into_bigquery(bq_client, target_table, entities, schema_info, request
                     else:
                         # Columns with mixed values we just serialize to json
                         value = json.dumps(value)
-                else:
+                elif value is not None:
                     value = cast_value(value)
 
             if translated_key != key:
@@ -765,6 +809,8 @@ def do_receiver_request(entities, request_args, bq_client, sesam_node_connection
                 logger.info("Refreshing entity schema from pipe '%s'..." % request_pipe_id)
                 schema_cache.pop(request_pipe_id, None)
                 schema_info = SchemaInfo(request_pipe_id, sesam_node_connection)
+                logger.info("Created schema '%s'..." % schema_info)
+
                 schema_cache[request_pipe_id] = schema_info
 
                 # Recreate the target table
@@ -804,11 +850,13 @@ def do_receiver_request(entities, request_args, bq_client, sesam_node_connection
     # create the response
     return Response("Thanks!", mimetype='text/plain')
 
+
 @app.route('/receiver', methods=['POST'])
 def receiver():
     entities = request.json
 
     do_receiver_request(entities, request.args, bq_client=client, sesam_node_connection=node_connection)
+
 
 class GlobalBootstrapper:
 

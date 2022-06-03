@@ -344,9 +344,9 @@ def test_happy_day_test():
     assert_equal(3, num_rows)
 
     expected_entities = [
-        {"_id": "1", "_updated": 0, "_deleted": False, "code": 1, "global_pipe__foo": "1"},
-        {"_id": "2", "_updated": 1, "_deleted": False, "code": 2, "global_pipe__foo": "2"},
-        {"_id": "3", "_updated": 2, "_deleted": False, "code": 3, "global_pipe__foo": '["3", "3.1"]'},
+        {"_id": "1", "_updated": 0, "_deleted": False, "code": 1, "global_pipe__foo": ["1"]},
+        {"_id": "2", "_updated": 1, "_deleted": False, "code": 2, "global_pipe__foo": ["2"]},
+        {"_id": "3", "_updated": 2, "_deleted": False, "code": 3, "global_pipe__foo": ["3", "3.1"]},
     ]
 
     table_entities = bq_client.get_table(target_table)
@@ -380,8 +380,8 @@ def test_happy_day_test():
     assert_equal(2, num_rows)
 
     expected_entities = [
-        {"_id": "1", "_updated": 3, "_deleted": False, "code": 1, "global_pipe__foo": "1.1"},
-        {"_id": "3", "_updated": 8, "_deleted": False, "code": 3, "global_pipe__foo": "3.4"},
+        {"_id": "1", "_updated": 3, "_deleted": False, "code": 1, "global_pipe__foo": ["1.1"]},
+        {"_id": "3", "_updated": 8, "_deleted": False, "code": 3, "global_pipe__foo": ["3.4"]},
     ]
 
     table_entities = bq_client.get_table(target_table)
@@ -644,9 +644,9 @@ def test_schema_generation():
     assert_equal(schema.bigquery_schema["description"].is_nullable, True)
     assert_equal(schema.bigquery_schema["description"].field_type, "STRING")
 
-    assert_equal(schema.bigquery_schema["global_pipe__bar_code"].mode, "NULLABLE")
-    assert_equal(schema.bigquery_schema["global_pipe__bar_code"].is_nullable, True)
-    assert_equal(schema.bigquery_schema["global_pipe__bar_code"].field_type, "STRING")
+    assert_equal(schema.bigquery_schema["global_pipe__bar_code"].mode, "REPEATED")
+    assert_equal(schema.bigquery_schema["global_pipe__bar_code"].is_nullable, False)
+    assert_equal(schema.bigquery_schema["global_pipe__bar_code"].field_type, "BIGNUMERIC")
 
     assert_equal(schema.bigquery_schema["zendesk_user__user_fields"].mode, "NULLABLE")
     assert_equal(schema.bigquery_schema["zendesk_user__user_fields"].is_nullable, True)
