@@ -840,7 +840,6 @@ def do_receiver_request(entities, request_args, bq_client, sesam_node_connection
             logger.info("I saw %s rows during this run" % schema_info.rows_seen)
     except BaseException as e:
         logger.exception("Something went wrong")
-        raise e
         raise BadRequest(f"Something went wrong! {str(e)}")
     finally:
         with client_locks_lock:
@@ -855,7 +854,7 @@ def do_receiver_request(entities, request_args, bq_client, sesam_node_connection
 def receiver():
     entities = request.json
 
-    do_receiver_request(entities, request.args, bq_client=client, sesam_node_connection=node_connection)
+    return do_receiver_request(entities, request.args, bq_client=client, sesam_node_connection=node_connection)
 
 
 class GlobalBootstrapper:
@@ -990,6 +989,9 @@ if __name__ == '__main__':
         with open("/tmp/bigquery-microservice-58c39f7392e7.json", "w") as outfile:
             outfile.write(credentials_content)
         os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = "/tmp/bigquery-microservice-58c39f7392e7.json"
+
+    if not node_url:
+        raise AssertionError("'NODE_URL' parameter not set")
 
     client = bigquery.Client()
     node_connection = sesamclient.Connection(node_url, jwt_auth_token=jwt_token)
