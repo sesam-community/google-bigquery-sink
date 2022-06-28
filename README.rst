@@ -56,7 +56,7 @@ BATCH_SIZE - maximum number of rows to insert via the bigquery client per operat
 
 Note that if you set up the MS to bootstrap a node, you should name it in such a way that it will not be overwritten by the generated systems which all will start with "bigquery", for instance use the id "bootstrap-bigquery".
 
-NOTE: use "true" or "false" to denote boolean in your system config
+NOTE: use "true" or "false" to denote boolean in your system config for this section
 
 Example config:
 ---------------
