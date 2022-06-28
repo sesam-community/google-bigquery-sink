@@ -50,6 +50,8 @@ BOOTSTRAP_INTERVAL - how often (in hours) to rerun the bootstrapping process - t
 
 BOOTSTRAP_RECREATE_PIPES - overwrite existing pipes and system when bootstrapping - mostly useful if the template has changed
 
+BOOTSTRAP_DOCKER_IMAGE_NAME - customize the docker image name to use when bootrapping systems, defaults to "sesamcommunity/google-bigquery-sink:development"
+
 BATCH_SIZE - maximum number of rows to insert via the bigquery client per operation, default 1000. Reduce it if you experience limit related errors or hanging client connections.
 
 Note that if you set up the MS to bootstrap a node, you should name it in such a way that it will not be overwritten by the generated systems which all will start with "bigquery", for instance use the id "bootstrap-bigquery".
@@ -69,7 +71,7 @@ Example config:
           "JWT_TOKEN": "$SECRET(bigquery-ms-jwt)",
           "NODE_URL": "https://your-sesam-service/api"
         },
-        "image": "sesamcommunity/sesam-bigquery:latest",
+        "image": "sesamcommunity/google-bigquery-sink:development",
         "memory": 1512,
         "port": 5000
       },
