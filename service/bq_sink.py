@@ -24,7 +24,7 @@ class ChunkTooBigException(Exception):
     pass
 
 
-version = "1.0.12"
+version = "1.1.0"
 
 PIPE_CONFIG_TEMPLATE = """
 {
@@ -67,7 +67,7 @@ SYSTEM_CONFIG_TEMPLATE = """
       "NODE_URL": "%(node_url)s",
       "BIGQUERY_TABLE_PREFIX": "%(table_prefix)s"
     },
-    "image": "sesamcommunity/sesam-bigquery:latest",
+    "image": "%(docker_image_name)s",
     "memory": 1512,
     "port": 5000
   },
@@ -90,14 +90,14 @@ node_url = os.environ.get("NODE_URL")
 config_pipe_id = os.environ.get("PIPE_ID")
 bq_table_prefix = os.environ.get("BIGQUERY_TABLE_PREFIX")
 config_target_table = os.environ.get("TARGET_TABLE")
-bootstrap_pipes_recreate_pipes = os.environ.get("BOOTSTRAP_RECREATE_PIPES", False)
-bootstrap_pipes = os.environ.get("BOOTSTRAP_PIPES", False)
-bootstrap_single_system = os.environ.get("BOOTSTRAP_SINGLE_SYSTEM", False)
-use_multithreaded = os.environ.get("MULTITHREADED", "true") in ["1", 1, "true", "True"]
+bootstrap_pipes_recreate_pipes = os.environ.get("BOOTSTRAP_RECREATE_PIPES", "false").lower() == "true"
+bootstrap_pipes = os.environ.get("BOOTSTRAP_PIPES", "false").lower() == "true"
+bootstrap_single_system = os.environ.get("BOOTSTRAP_SINGLE_SYSTEM", "false").lower() == "true"
+use_multithreaded = os.environ.get("MULTITHREADED", "true").lower() == "false"
 bootstrap_config_group = os.environ.get("BOOTSTRAP_CONFIG_GROUP", "analytics")
 bootstrap_interval = os.environ.get("BOOTSTRAP_INTERVAL", "24")
 config_batch_size = 1000
-
+bootstrap_docker_image_name = os.environ.get("BOOTSTRAP_DOCKER_IMAGE_NAME", "sesamcommunity/google-bigquery-sink:development")
 
 schema_cache = {}
 client_locks_lock = RLock()
@@ -932,7 +932,8 @@ class GlobalBootstrapper:
                         "system_id": bq_system_id,
                         "config_group": bootstrap_config_group,
                         "node_url": node_url,
-                        "table_prefix": bq_table_prefix
+                        "table_prefix": bq_table_prefix,
+                        "docker_image_name": bootstrap_docker_image_name
                     }
 
                     system_config = json.loads(SYSTEM_CONFIG_TEMPLATE % system_params)
