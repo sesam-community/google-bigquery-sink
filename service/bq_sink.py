@@ -38,7 +38,7 @@ PIPE_CONFIG_TEMPLATE = """
     "type": "json",
     "system": "%(system_id)s",
     "batch_size": %(batch_size)s,
-    "url": "receiver?pipe_id=%(dataset_id)s&target_table=%(table_prefix)s.%(dataset_id)s"
+    "url": "receiver?pipe_id=%(dataset_id)s&target_table=%(target_table)s"
   },
   "pump": {
     "schedule_interval": %(interval)s,
@@ -889,6 +889,7 @@ class GlobalBootstrapper:
         # Check that all globals have corresponding "share" pipes
         global_datasets = []
         pipes = {}
+        global_pipes = {}
         for pipe in self.connection.get_pipes():
             pipes[pipe.id] = pipe
             if pipe.config["effective"].get("metadata", {}).get("global", False) is True:
@@ -899,7 +900,9 @@ class GlobalBootstrapper:
                     continue
                 logger.info("Found global '%s'.." % pipe.id)
 
-                global_datasets.append(pipe.config.get("sink", {}).get("dataset", pipe.id))
+                global_dataset_id = pipe.config["original"].get("sink", {}).get("dataset", pipe.id)
+                global_pipes[global_dataset_id] = pipe
+                global_datasets.append(global_dataset_id)
 
         new_pipe_configs = {}
         new_system_configs = {}
@@ -914,12 +917,21 @@ class GlobalBootstrapper:
                 logger.info("Found a new global '%s' or recreating an existing pipe - "
                             "generating pipe and/or system..." % dataset_id)
 
+                global_pipe = global_pipes[dataset_id]
+                pipe_config = global_pipe.config["original"]
+                target_table = None
+                if "metadata" in pipe_config and "bigquery-name" in pipe_config["metadata"]:
+                    target_table = pipe_config["metadata"]["bigquery-name"]
+
+                if not target_table:
+                    target_table = f"{bq_table_prefix}.{dataset_id}"
+
                 pipe_config_params = {
                     "pipe_id": bq_pipe_id,
                     "system_id": bq_system_id,
                     "dataset_id": dataset_id,
                     "batch_size": 10000,
-                    "table_prefix": bq_table_prefix,
+                    "target_table": target_table,
                     "config_group": bootstrap_config_group,
                     "interval": 3600
                 }
