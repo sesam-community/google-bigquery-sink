@@ -90,10 +90,10 @@ node_url = os.environ.get("NODE_URL")
 config_pipe_id = os.environ.get("PIPE_ID")
 bq_table_prefix = os.environ.get("BIGQUERY_TABLE_PREFIX")
 config_target_table = os.environ.get("TARGET_TABLE")
-bootstrap_pipes_recreate_pipes = os.environ.get("BOOTSTRAP_RECREATE_PIPES", "false") in ["1", 1, "true", "True"]
-bootstrap_pipes = os.environ.get("BOOTSTRAP_PIPES", "false") in ["1", 1, "true", "True"]
-bootstrap_single_system = os.environ.get("BOOTSTRAP_SINGLE_SYSTEM", "false") in ["1", 1, "true", "True"]
-use_multithreaded = os.environ.get("MULTITHREADED", "true") in ["1", 1, "true", "True"]
+bootstrap_pipes_recreate_pipes = os.environ.get("BOOTSTRAP_RECREATE_PIPES", "false").lower() == "true"
+bootstrap_pipes = os.environ.get("BOOTSTRAP_PIPES", "false").lower() == "true"
+bootstrap_single_system = os.environ.get("BOOTSTRAP_SINGLE_SYSTEM", "false").lower() == "true"
+use_multithreaded = os.environ.get("MULTITHREADED", "true").lower() == "false"
 bootstrap_config_group = os.environ.get("BOOTSTRAP_CONFIG_GROUP", "analytics")
 bootstrap_interval = os.environ.get("BOOTSTRAP_INTERVAL", "24")
 config_batch_size = 1000
