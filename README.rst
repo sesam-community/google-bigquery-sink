@@ -2,6 +2,9 @@
 BigQuery Sink Microservice
 ==========================
 
+
+regafa
+
 A python microservice for receiving a JSON entity stream from a Sesam service instance and inserting, updating or
 deleting corresponding rows in a Google Bigquery table.
 
