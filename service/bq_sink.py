@@ -61,7 +61,7 @@ SYSTEM_CONFIG_TEMPLATE = """
   },
   "docker": {
     "environment": {
-      "config": {
+      "CONFIG": {
         "google_application_credentials": "$SECRET(bigquery-credentials)",
         "jwt_token": "$SECRET(bigquery-ms-jwt)",
         "multithreaded": true,
