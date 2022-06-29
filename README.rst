@@ -28,7 +28,7 @@ Note that if ``pipe_id`` is present in the URL then ``target_table`` must be as 
 Environment variables
 ---------------------
 
-The service takes a single environment variable named ``config``. This should be a string representing a JSON object
+The service takes a single environment variable named ``CONFIG``. This should be a string representing a JSON object
 with the following properties:
 
 ``google_application_credentials`` - the google credentials to use (service account associated token in json form)
@@ -75,7 +75,7 @@ Example config:
       "type": "system:microservice",
       "docker": {
         "environment": {
-          "config": {
+          "CONFIG": {
             "bigquery_table_prefix": "my-sesam-project.my-dataset",
             "google_application_credentials": "$SECRET(bigquery-credentials)",
             "jwt_token": "$SECRET(bigquery-ms-jwt)",

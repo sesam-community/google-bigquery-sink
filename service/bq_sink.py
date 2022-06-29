@@ -103,12 +103,12 @@ config_batch_size = 1000
 bootstrap_docker_image_name = os.environ.get("BOOTSTRAP_DOCKER_IMAGE_NAME",
                                              "sesamcommunity/google-bigquery-sink:development")
 
-config_str = os.environ.get("config")
+config_str = os.environ.get("CONFIG")
 if config_str:
     try:
         config = json.loads(config_str)
     except BaseException as e:
-        logger.critical("Failed to parse 'config', not valid json!")
+        logger.critical("Failed to parse 'CONFIG', not valid json!")
         sys.exit(1)
 
     if "jwt_token" in config:
