@@ -24,7 +24,7 @@ class ChunkTooBigException(Exception):
     pass
 
 
-version = "1.2.0"
+version = "1.2.1"
 
 PIPE_CONFIG_TEMPLATE = """
 {
@@ -102,6 +102,7 @@ bootstrap_interval = os.environ.get("BOOTSTRAP_INTERVAL", "24")
 config_batch_size = 1000
 bootstrap_docker_image_name = os.environ.get("BOOTSTRAP_DOCKER_IMAGE_NAME",
                                              "sesamcommunity/google-bigquery-sink:development")
+_batch_size = os.environ.get("BATCH_SIZE")
 
 config_str = os.environ.get("CONFIG")
 if config_str:
@@ -146,6 +147,12 @@ if config_str:
 
     if "bootstrap_docker_image_name" in config:
         bootstrap_docker_image_name = config["bootstrap_docker_image_name"]
+
+    if "batch_size" in config:
+        _batch_size = config["batch_size"]
+
+    if "google_application_credentials" in config:
+        os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = config["google_application_credentials"]
 
 schema_cache = {}
 client_locks_lock = RLock()
@@ -1079,7 +1086,6 @@ if __name__ == '__main__':
     else:
         logger.info("Running in single threaded mode")
 
-    _batch_size = os.environ.get("BATCH_SIZE")
     try:
         config_batch_size = int(_batch_size)
         logger.info("Using BATCH_SIZE of %s" % config_batch_size)
