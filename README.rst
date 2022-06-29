@@ -34,7 +34,7 @@ JWT_TOKEN - valid jwt token to the node the MS runs in. The role of the token ne
 
 NODE_URL - public url to the sesam service the MS runs within - it should end in '/api'.
 
-BIGQUERY_TABLE_PREFIX - a path prefix to use for the biqquery tables, representing a bq project path
+BIGQUERY_TABLE_PREFIX - a path prefix to use for the biqquery tables, representing a bq project path - see https://cloud.google.com/bigquery/docs/tables#table_naming
 
 TARGET_TABLE - if not in the "receiver" endpoint URL during run time, you can set it in this variable
 
@@ -57,6 +57,12 @@ BATCH_SIZE - maximum number of rows to insert via the bigquery client per operat
 Note that if you set up the MS to bootstrap a node, you should name it in such a way that it will not be overwritten by the generated systems which all will start with "bigquery", for instance use the id "bootstrap-bigquery".
 
 NOTE: use "true" or "false" to denote boolean in your system config for this section
+
+Global pipe metadata
+--------------------
+
+When bootstrapping pipes that read from the globals, you can override the generated target table name by setting the "bigquery-name"
+property in the global pipe's "metadata". Make sure it follows the Bigquery table naming conventions: https://cloud.google.com/bigquery/docs/tables#table_naming
 
 Example config:
 ---------------
