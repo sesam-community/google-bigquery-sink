@@ -24,7 +24,7 @@ class ChunkTooBigException(Exception):
     pass
 
 
-version = "1.1.1"
+version = "1.2.0"
 
 PIPE_CONFIG_TEMPLATE = """
 {
@@ -61,11 +61,13 @@ SYSTEM_CONFIG_TEMPLATE = """
   },
   "docker": {
     "environment": {
-      "GOOGLE_APPLICATION_CREDENTIALS": "$SECRET(bigquery-credentials)",
-      "JWT_TOKEN": "$SECRET(bigquery-ms-jwt)",
-      "MULTITHREADED": "true",
-      "NODE_URL": "%(node_url)s",
-      "BIGQUERY_TABLE_PREFIX": "%(table_prefix)s"
+      "CONFIG": {
+        "google_application_credentials": "$SECRET(bigquery-credentials)",
+        "jwt_token": "$SECRET(bigquery-ms-jwt)",
+        "multithreaded": true,
+        "node_url": "%(node_url)s",
+        "bigquery_table_prefix": "%(table_prefix)s"
+      }
     },
     "image": "%(docker_image_name)s",
     "memory": 1512,
@@ -83,8 +85,9 @@ node_connection = None
 
 app = Flask(__name__)
 
-logger = logging.getLogger("datasink-service")
+logger = logging.getLogger("bigquery-sink")
 
+# For backwards compatibility and local development purposes
 jwt_token = os.environ.get("JWT_TOKEN")
 node_url = os.environ.get("NODE_URL")
 config_pipe_id = os.environ.get("PIPE_ID")
@@ -97,7 +100,52 @@ use_multithreaded = os.environ.get("MULTITHREADED", "true").lower() == "false"
 bootstrap_config_group = os.environ.get("BOOTSTRAP_CONFIG_GROUP", "analytics")
 bootstrap_interval = os.environ.get("BOOTSTRAP_INTERVAL", "24")
 config_batch_size = 1000
-bootstrap_docker_image_name = os.environ.get("BOOTSTRAP_DOCKER_IMAGE_NAME", "sesamcommunity/google-bigquery-sink:development")
+bootstrap_docker_image_name = os.environ.get("BOOTSTRAP_DOCKER_IMAGE_NAME",
+                                             "sesamcommunity/google-bigquery-sink:development")
+
+config_str = os.environ.get("CONFIG")
+if config_str:
+    try:
+        config = json.loads(config_str)
+    except BaseException as e:
+        logger.critical("Failed to parse 'CONFIG', not valid json!")
+        sys.exit(1)
+
+    if "jwt_token" in config:
+        jwt_token = config["jwt_token"]
+
+    if "node_url" in config:
+        node_url = config["node_url"]
+
+    if "pipe_id" in config:
+        config_pipe_id = config["pipe_id"]
+
+    if "bigquery_table_prefix" in config:
+        bq_table_prefix = config["bigquery_table_prefix"]
+
+    if "target_table" in config:
+        config_target_table = config["target_table"]
+
+    if "bootstrap_recreate_pipes" in config:
+        bootstrap_pipes_recreate_pipes = config["bootstrap_recreate_pipes"]
+
+    if "bootstrap_pipes" in config:
+        bootstrap_pipes = config["bootstrap_pipes"]
+
+    if "bootstrap_single_system" in config:
+        bootstrap_single_system = config["bootstrap_single_system"]
+
+    if "multithreaded" in config:
+        use_multithreaded = config["multithreaded"]
+
+    if "bootstrap_config_group" in config:
+        bootstrap_config_group = config["bootstrap_config_group"]
+
+    if "bootstrap_interval" in config:
+        bootstrap_interval = config["bootstrap_interval"]
+
+    if "bootstrap_docker_image_name" in config:
+        bootstrap_docker_image_name = config["bootstrap_docker_image_name"]
 
 schema_cache = {}
 client_locks_lock = RLock()

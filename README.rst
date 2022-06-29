@@ -1,14 +1,14 @@
-=====================
-BigQuery Microservice
-=====================
+==========================
+BigQuery Sink Microservice
+==========================
 
 A python microservice for receiving a JSON entity stream from a Sesam service instance and inserting, updating or
 deleting corresponding rows in a Google Bigquery table.
 
 ::
 
-  $ python3 service/datasink-service.py
-   * Running on http://0.0.0.0:5001/ (Press CTRL+C to quit)
+  $ python3 service/bq_sink.py
+   * Running on http://0.0.0.0:5000/ (Press CTRL+C to quit)
    * Restarting with stat
    * Debugger is active!
    * Debugger pin code: 260-787-156
@@ -17,46 +17,47 @@ The service listens on port 5000.
 
 JSON entities can be posted to 'http://localhost:5000/receiver'.
 
-The receiver can take two parameters:
+The receiver understands these request (URL) parameters:
 
-* pipe_id - the pipe to use as source for the bigquery schema
-* target_table - the name of the table to write to
-* batch_size - maximum number of rows to insert via the bigquery client per operation, default 1000. Reduce it if you experience limit related errors or hanging client connections.
+* ``pipe_id`` - the pipe to use as source for the bigquery schema
+* ``target_table`` - the name of the table to write to
+* ``batch_size`` - maximum number of rows to insert via the bigquery client per operation, default 1000. Reduce it if you experience limit related errors or hanging client connections.
 
-Note that if 'pipe_id' is present in the URL then 'target_table' must be as well.
+Note that if ``pipe_id`` is present in the URL then ``target_table`` must be as well.
 
 Environment variables
 ---------------------
 
-GOOGLE_APPLICATION_CREDENTIALS - the google credentials to use (service account associated token in json form)
+The service takes a single environment variable named ``CONFIG``. This should be a string representing a JSON object
+with the following properties:
 
-JWT_TOKEN - valid jwt token to the node the MS runs in. The role of the token needs permission to create pipes and systems if 'BOOTSTRAP_PIPES' is also set.'
+``google_application_credentials`` - the google credentials to use (service account associated token in json form)
 
-NODE_URL - public url to the sesam service the MS runs within - it should end in '/api'.
+``jwt_token`` - valid jwt token to the node the MS runs in. The role of the token needs permission to create pipes and systems if ``bootstrap_pipes`` is also set.'
 
-BIGQUERY_TABLE_PREFIX - a path prefix to use for the biqquery tables, representing a bq project path - see https://cloud.google.com/bigquery/docs/tables#table_naming
+``node_url`` - public url to the sesam service the MS runs within - it should end in '/api'.
 
-TARGET_TABLE - if not in the "receiver" endpoint URL during run time, you can set it in this variable
+``bigquery_table_prefix`` - a path prefix to use for the biqquery tables, representing a bq project path - see https://cloud.google.com/bigquery/docs/tables#table_naming
 
-PIPE_ID - if not in the "receiver" endpoint URL during run time, you can set it in this variable
+``target_table`` - if not in the "receiver" endpoint URL during run time, you can set it in this variable
 
-BOOTSTRAP_PIPES - if set to 'true' will bootstrap one endpoint pipe for each global present in the node
+``pipe_id`` - if not in the "receiver" endpoint URL during run time, you can set it in this variable
 
-BOOTSTRAP_SINGLE_SYSTEM - if set to 'true' will use a single system with the id "bigquery" for all bootstrapped pipes - note that if changed after the node has already been bootstrapped, it will not remove any existing systems created
+``bootstrap_pipes`` - if set to 'true' will bootstrap one endpoint pipe for each global present in the node
 
-BOOTSTRAP_CONFIG_GROUP - the config group to generate pipes and systems in, if not set defaults to "analytics"
+``bootstrap_single_system`` - if set to 'true' will use a single system with the id "bigquery" for all bootstrapped pipes - note that if changed after the node has already been bootstrapped, it will not remove any existing systems created
 
-BOOTSTRAP_INTERVAL - how often (in hours) to rerun the bootstrapping process - the default is 24
+``bootstrap_config_group`` - the config group to generate pipes and systems in, if not set defaults to "analytics"
 
-BOOTSTRAP_RECREATE_PIPES - overwrite existing pipes and system when bootstrapping - mostly useful if the template has changed
+``bootstrap_interval`` - how often (in hours) to rerun the bootstrapping process - the default is 24
 
-BOOTSTRAP_DOCKER_IMAGE_NAME - customize the docker image name to use when bootrapping systems, defaults to "sesamcommunity/google-bigquery-sink:development"
+``bootstrap_recreate_pipes`` - overwrite existing pipes and system when bootstrapping - mostly useful if the template has changed
 
-BATCH_SIZE - maximum number of rows to insert via the bigquery client per operation, default 1000. Reduce it if you experience limit related errors or hanging client connections.
+``bootstrap_docker_image_name`` - customize the docker image name to use when bootrapping systems, defaults to "sesamcommunity/google-bigquery-sink:development"
+
+``batch_size`` - maximum number of rows to insert via the bigquery client per operation, default 1000. Reduce it if you experience limit related errors or hanging client connections.
 
 Note that if you set up the MS to bootstrap a node, you should name it in such a way that it will not be overwritten by the generated systems which all will start with "bigquery", for instance use the id "bootstrap-bigquery".
-
-NOTE: use "true" or "false" to denote boolean in your system config for this section
 
 Global pipe metadata
 --------------------
@@ -74,10 +75,12 @@ Example config:
       "type": "system:microservice",
       "docker": {
         "environment": {
-          "BIGQUERY_TABLE_PREFIX": "my-sesam-project",
-          "GOOGLE_APPLICATION_CREDENTIALS": "$SECRET(bigquery-credentials)",
-          "JWT_TOKEN": "$SECRET(bigquery-ms-jwt)",
-          "NODE_URL": "https://your-sesam-service/api"
+          "CONFIG": {
+            "bigquery_table_prefix": "my-sesam-project.my-dataset",
+            "google_application_credentials": "$SECRET(bigquery-credentials)",
+            "jwt_token": "$SECRET(bigquery-ms-jwt)",
+            "node_url": "https://your-sesam-service/api"
+          }
         },
         "image": "sesamcommunity/google-bigquery-sink:development",
         "memory": 1512,
@@ -104,7 +107,7 @@ Example usage:
         "type": "json",
         "system": "bigquery-foo",
         "batch_size": 10000,
-        "url": "receiver?pipe_id=global-foo&target_table=global-foo"
+        "url": "receiver?pipe_id=global-foo&target_table=your-project.your-dataset.global-foo"
       },
       "pump": {
         "fallback_to_single_entities_on_batch_fail": false,
