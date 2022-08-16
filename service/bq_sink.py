@@ -24,7 +24,7 @@ class ChunkTooBigException(Exception):
     pass
 
 
-version = "1.3.0"
+version = "1.3.1"
 
 PIPE_CONFIG_TEMPLATE = """
 {
@@ -1063,7 +1063,7 @@ if __name__ == '__main__':
         raise AssertionError("'NODE_URL' parameter not set")
 
     client = bigquery.Client()
-    node_connection = sesamclient.Connection(node_url, jwt_auth_token=jwt_token)
+    node_connection = sesamclient.Connection(node_url, jwt_auth_token=jwt_token, timeout=5*60)
 
     format_string = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 
