@@ -24,7 +24,7 @@ class ChunkTooBigException(Exception):
     pass
 
 
-version = "1.2.1"
+version = "1.3.0"
 
 PIPE_CONFIG_TEMPLATE = """
 {
