@@ -24,7 +24,7 @@ class ChunkTooBigException(Exception):
     pass
 
 
-version = "1.2.1"
+version = "1.3.0"
 
 PIPE_CONFIG_TEMPLATE = """
 {
@@ -275,6 +275,7 @@ class SchemaInfo:
         self.pipe_schema_url = sesam_node_connection.sesamapi_base_url + "pipes/" + pipe_id + "/entity-types/sink"
 
         self.default_properties = {
+            "_id": {"type": "string"},
             "_deleted": {"type": "boolean"},
             "_updated": {"type": "integer"}
         }

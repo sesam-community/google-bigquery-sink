@@ -285,15 +285,6 @@ def test_happy_day_test():
             "$replaced": {
                 "type": "boolean"
             },
-            "_deleted": {
-                "type": "boolean"
-            },
-            "_id": {
-                "type": "string"
-            },
-            "_updated": {
-                "type": "integer"
-            },
             "code": {
                 "type": "integer"
             },
@@ -417,15 +408,6 @@ def test_insert_array_test():
                 },
                 "type": "array"
             },
-            "_deleted": {
-                "type": "boolean"
-            },
-            "_id": {
-                "type": "string"
-            },
-            "_updated": {
-                "type": "integer"
-            },
             "global-pipe:FOO": {
                 "items": {
                     "subtype": "decimal",
@@ -534,15 +516,6 @@ def test_schema_generation():
                     "type": "string"
                 },
                 "type": "array"
-            },
-            "_deleted": {
-                "type": "boolean"
-            },
-            "_id": {
-                "type": "string"
-            },
-            "_updated": {
-                "type": "integer"
             },
             "description": {
               "type": "string"
