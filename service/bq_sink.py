@@ -275,6 +275,7 @@ class SchemaInfo:
         self.pipe_schema_url = sesam_node_connection.sesamapi_base_url + "pipes/" + pipe_id + "/entity-types/sink"
 
         self.default_properties = {
+            "_id": {"type": "string"},
             "_deleted": {"type": "boolean"},
             "_updated": {"type": "integer"}
         }
