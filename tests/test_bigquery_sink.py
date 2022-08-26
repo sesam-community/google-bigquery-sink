@@ -89,7 +89,7 @@ class TestableBQClient:
             return TestableQueryResult([[len(self.get_table(table_id))]])
         elif query.find("MERGE") > -1:
             # Merge query - we have to cheat here and just extract the source and target tables
-            # and implement the querty with python. So if the merge query changes, this code needs to
+            # and implement the query with python. So if the merge query changes, this code needs to
             # change too
 
             ix = query.find("MERGE")
@@ -149,6 +149,12 @@ class TestableBQClient:
             ix = len(self.table_rows[table_id])
 
             for row in json_rows:
+                if row.get("_deleted", False) is True:
+                    keys = sorted(list(row.keys()))
+                    if keys != ["_deleted", "_id", "_updated"]:
+                        raise AssertionError("Deleted entities should only have _id, _deleted "
+                                             "and _updated properties: %s" % keys)
+
                 self.table_rows[table_id].append(row)
 
                 row_id = row["_id"]
@@ -196,7 +202,7 @@ def test_merge_result():
         {"_id": "3", "_updated": 2, "_deleted": False, "foo": "3"},
         {"_id": "1", "_updated": 3, "_deleted": False, "foo": "1.1"},
         {"_id": "1", "_updated": 4, "_deleted": False, "foo": "1.2"},
-        {"_id": "3", "_updated": 5, "_deleted": True, "foo": "3"},
+        {"_id": "3", "_updated": 5, "_deleted": True},
     ]
 
     source_table = "my-project.my-dataset.sourcetable"
@@ -233,10 +239,10 @@ def test_merge_result():
 
     entities = [
         {"_id": "1", "_updated": 6, "_deleted": False, "foo": "1.3"},
-        {"_id": "2", "_updated": 7, "_deleted": True, "foo": "2.1"},
+        {"_id": "2", "_updated": 7, "_deleted": True},
         {"_id": "3", "_updated": 8, "_deleted": False, "foo": "3.2"},
         {"_id": "3", "_updated": 9, "_deleted": False, "foo": "3.3"},
-        {"_id": "3", "_updated": 10, "_deleted": True, "foo": "3.4"},
+        {"_id": "3", "_updated": 10, "_deleted": True},
         {"_id": "3", "_updated": 11, "_deleted": False, "foo": "3.5"}
     ]
 
