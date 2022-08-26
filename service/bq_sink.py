@@ -24,7 +24,7 @@ class ChunkTooBigException(Exception):
     pass
 
 
-version = "1.3.1"
+version = "1.3.2"
 
 PIPE_CONFIG_TEMPLATE = """
 {
@@ -668,78 +668,86 @@ def insert_entities_into_table_mt(bq_client, table, entities, batch_size=1000):
 def insert_into_bigquery(bq_client, target_table, entities, schema_info, request_id, sequence_id, multithreaded=False,
                          batch_size=1000):
     # Remove irrelevant properties and translate property names and, if needed, values
+    filtered_entities = []
     for entity in entities:
-        for key in list(entity.keys()):
-            # Remove invalid underscore properties (unneeded internals and user-created ones that the dataset
-            # sink would strip away in any case)
-            if key[0] == "_" and key not in schema_info.valid_internal_properties:
-                entity.pop(key, None)
+        if entity.get("_deleted", False) is True:
+            # Skip translation of deleted entities, their properties are most likely not relevant anyway and will
+            # be stripped away upon insert into the temp table
+            entity = {"_id": entity["_id"], "_deleted": True, "_updated": entity["_updated"]}
+        else:
+            for key in list(entity.keys()):
+                # Remove invalid underscore properties (unneeded internals and user-created ones that the dataset
+                # sink would strip away in any case)
+                if key[0] == "_" and key not in schema_info.valid_internal_properties:
+                    entity.pop(key, None)
 
-        for key in schema_info.property_column_translation:
-            # Translate properties->columns
-            if key not in entity:
-                continue
+            for key in schema_info.property_column_translation:
+                # Translate properties->columns
+                if key not in entity:
+                    continue
 
-            value = entity.get(key)
-            translated_key = schema_info.property_column_translation.get(key, key)
+                value = entity.get(key)
+                translated_key = schema_info.property_column_translation.get(key, key)
 
-            def cast_value(_value):
-                # Check if we need to transit decode this value
-                if isinstance(_value, str) and len(_value) > 1 and _value[0] == "~":
-                    prefix = _value[:2]
-                    if prefix in ["~r", "~u", "~:", "~b"]:
-                        # URI, NI, UUID, bytes, Nanosecond: just cast it to string without the prefix
-                        _value = _value[len(prefix):]
-                    elif prefix in ["~d", "~f"]:
-                        # Float or decimal
-                        _value = float(Decimal(_value[len(prefix):]))
-                    elif prefix == "̃~t":
-                        # Truncate nanoseconds to microseconds to be compatible with BQ
-                        _value = _value[len(prefix):]
-                        dt_int = datetime_parse(_value)
-                        _value = datetime_format(dt_int)
-                    else:
-                        # Unknown type, strip the prefix off
-                        _value = _value[len(prefix):]
-
-                return str(_value)
-
-            if translated_key in schema_info.cast_columns:
-                if schema_info.bigquery_schema[translated_key].mode == "REPEATED":
-                    if not isinstance(value, list):
-                        if value is not None:
-                            value = [value]
+                def cast_value(_value):
+                    # Check if we need to transit decode this value
+                    if isinstance(_value, str) and len(_value) > 1 and _value[0] == "~":
+                        prefix = _value[:2]
+                        if prefix in ["~r", "~u", "~:", "~b"]:
+                            # URI, NI, UUID, bytes, Nanosecond: just cast it to string without the prefix
+                            _value = _value[len(prefix):]
+                        elif prefix in ["~d", "~f"]:
+                            # Float or decimal
+                            _value = float(Decimal(_value[len(prefix):]))
+                        elif prefix == "̃~t":
+                            # Truncate nanoseconds to microseconds to be compatible with BQ
+                            _value = _value[len(prefix):]
+                            dt_int = datetime_parse(_value)
+                            _value = datetime_format(dt_int)
                         else:
-                            value = []
+                            # Unknown type, strip the prefix off
+                            _value = _value[len(prefix):]
 
-                if isinstance(value, dict):
-                    # Cast object values to string directly
-                    # TODO: should we transit decode stuff recursively first?
-                    value = json.dumps(value)
-                elif isinstance(value, list):
-                    if len(value) > 4096:
-                        value = sorted(value)[:4096]
+                    return str(_value)
 
-                    # Check if this is a supported list
+                if translated_key in schema_info.cast_columns:
                     if schema_info.bigquery_schema[translated_key].mode == "REPEATED":
-                        result = []
-                        # Truncate lists at 4096 to avoid a hanging insert, sort the list to make it deterministic
-                        for litem in value:
-                            if litem is None and translated_key in schema_info.array_propery_filter_nulls:
-                                # Array of single-value + NULL, we have to drop the NULLs as BQ doesn't support them
-                                continue
-                            result.append(cast_value(litem))
-                        value = result
-                    else:
-                        # Columns with mixed values we just serialize to json
+                        if not isinstance(value, list):
+                            if value is not None:
+                                value = [value]
+                            else:
+                                value = []
+
+                    if isinstance(value, dict):
+                        # Cast object values to string directly
+                        # TODO: should we transit decode stuff recursively first?
                         value = json.dumps(value)
-                elif value is not None:
-                    value = cast_value(value)
+                    elif isinstance(value, list):
+                        if len(value) > 4096:
+                            value = sorted(value)[:4096]
 
-            if translated_key != key:
-                entity.pop(key, None)
+                        # Check if this is a supported list
+                        if schema_info.bigquery_schema[translated_key].mode == "REPEATED":
+                            result = []
+                            # Truncate lists at 4096 to avoid a hanging insert, sort the list to make it deterministic
+                            for litem in value:
+                                if litem is None and translated_key in schema_info.array_propery_filter_nulls:
+                                    # Array of single-value + NULL, we have to drop the NULLs as BQ doesn't support them
+                                    continue
+                                result.append(cast_value(litem))
+                            value = result
+                        else:
+                            # Columns with mixed values we just serialize to json
+                            value = json.dumps(value)
+                    elif value is not None:
+                        value = cast_value(value)
 
-            entity[translated_key] = value
+                if translated_key != key:
+                    entity.pop(key, None)
+
+                entity[translated_key] = value
+
+        filtered_entities.append(entity)
 
     # Create a separate source table. The tables will be merged later.
     source_table = target_table + '_%s_%s_temp' % (sequence_id.replace("-", ""), request_id)
@@ -755,9 +763,9 @@ def insert_into_bigquery(bq_client, target_table, entities, schema_info, request
 
         # Upload test data to temp table
         if multithreaded:
-            insert_entities_into_table_mt(bq_client, source_table, entities, batch_size=batch_size)
+            insert_entities_into_table_mt(bq_client, source_table, filtered_entities, batch_size=batch_size)
         else:
-            insert_entities_into_table(bq_client, source_table, entities)
+            insert_entities_into_table(bq_client, source_table, filtered_entities)
 
         # Create MERGE query
         # Make schema into array of strings
