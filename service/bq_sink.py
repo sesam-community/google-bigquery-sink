@@ -1114,7 +1114,7 @@ class GlobalBootstrapper:
                     "batch_size": 10000,
                     "target_table": target_table,
                     "config_group": bootstrap_config_group,
-                    "lenient": bootstrap_pipes_lenient_mode and "true" or "false",
+                    "lenient_mode": bootstrap_pipes_lenient_mode and "true" or "false",
                     "interval": 3600
                 }
 
