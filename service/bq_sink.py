@@ -38,7 +38,7 @@ PIPE_CONFIG_TEMPLATE = """
     "type": "json",
     "system": "%(system_id)s",
     "batch_size": %(batch_size)s,
-    "url": "receiver?pipe_id=%(dataset_id)s&target_table=%(target_table)s"
+    "url": "receiver?pipe_id=%(dataset_id)s&target_table=%(target_table)s&lenient=%(lenient_mode)s"
   },
   "pump": {
     "schedule_interval": %(interval)s,
@@ -1114,6 +1114,7 @@ class GlobalBootstrapper:
                     "batch_size": 10000,
                     "target_table": target_table,
                     "config_group": bootstrap_config_group,
+                    "lenient": bootstrap_pipes_lenient_mode and "true" or "false",
                     "interval": 3600
                 }
 
