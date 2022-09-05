@@ -1,13 +1,12 @@
 import copy
+import datetime
+
+import pytest
 import google.cloud.exceptions
 import werkzeug.exceptions
+
 from google.cloud import bigquery
-from nose.tools import assert_true, assert_equal, assert_is_not_none, assert_false, assert_in, assert_is_none
-
 from service.bq_sink import do_receiver_request, count_rows_in_table, SchemaInfo
-
-assert_equal.__self__.maxDiff = None
-
 
 class TestableRequestReponse:
 
@@ -72,11 +71,42 @@ class TestableQueryResult:
         return self._result
 
 
+def assert_value(key, value, field_type):
+    from service.bq_sink import cast_value
+    if field_type in ['object', 'array', 'bytes', 'uuid', 'uri', 'ni', 'string']:
+        if not isinstance(value, (list, dict, str)):
+            raise AssertionError("The type of property '%s' does not "
+                                 "match the schema (%s)" % (key, field_type))
+    elif field_type in ["integer", "decimal", "number"]:
+        try:
+            _value = cast_value(value, stringify=False)
+            if not type(_value) in (int, float):
+                raise AssertionError("The type of property '%s' does not "
+                                     "match the schema (%s)" % (key, field_type))
+        except BaseException as e:
+            raise AssertionError("The type of property '%s' does not "
+                                 "match the schema (%s)" % (key, field_type))
+    elif field_type == "boolean":
+        if not isinstance(value, bool):
+            raise AssertionError("The type of property '%s' does not "
+                                 "match the schema (%s)" % (key, field_type))
+    elif field_type == "nanoseconds":
+        try:
+            _value = cast_value(value, stringify=False)
+            if not isinstance(_value, str):
+                raise AssertionError("The type of property '%s' does not "
+                                     "match the schema (%s)" % (key, field_type))
+        except BaseException as e:
+            raise AssertionError("The type of property '%s' does not "
+                                 "match the schema (%s)" % (key, field_type))
+
+
 class TestableBQClient:
     """ Class that simulates a BigQuery client and the methods needed to test the sink """
 
-    def __init__(self, **kwargs):
+    def __init__(self, schema_info=None, **kwargs):
         self.table_rows = {}
+        self.schema_info = schema_info
         self.table_row_indexes = {}
 
     def query(self, query, *args, **kwargs):
@@ -149,11 +179,36 @@ class TestableBQClient:
             ix = len(self.table_rows[table_id])
 
             for row in json_rows:
+                keys = sorted(list(row.keys()))
                 if row.get("_deleted", False) is True:
-                    keys = sorted(list(row.keys()))
                     if keys != ["_deleted", "_id", "_updated"]:
                         raise AssertionError("Deleted entities should only have _id, _deleted "
                                              "and _updated properties: %s" % keys)
+
+                if self.schema_info:
+                    # Verify that all entity properties we're about to insert are in the schema
+                    translated_keys = list(self.schema_info.property_column_translation.values())
+                    for key in keys:
+                        if key not in translated_keys:
+                            raise AssertionError("Property '%s' is not in schema" % key)
+
+                    # Check that the types match the schema
+                    for key in keys:
+                        if key in self.schema_info.valid_internal_properties:
+                            continue
+
+                        bq_field_type = self.schema_info.bigquery_schema[key]
+                        field_type = self.schema_info.seen_field_types[key]
+
+                        value = row.get(key)
+
+                        from service.bq_sink import cast_value
+                        if bq_field_type.mode == "REPEATED" and isinstance(value, list):
+                            # We need to look at the individual items of the list
+                            for subvalue in value:
+                                assert_value(key, subvalue, bq_field_type)
+                        else:
+                            assert_value(key, value, field_type)
 
                 self.table_rows[table_id].append(row)
 
@@ -231,7 +286,7 @@ def test_merge_result():
         {"_id": "1", "_updated": 4, "_deleted": False, "foo": "1.2"},
     ]
 
-    assert_equal(table_rows, expected_rows)
+    assert table_rows == expected_rows
 
     bq_client.delete_table(source_table)
     source_table_obj = bigquery.Table(source_table)
@@ -257,7 +312,7 @@ def test_merge_result():
 
     table_rows = bq_client.get_table(target_table)
 
-    assert_equal(table_rows, expected_rows)
+    assert table_rows == expected_rows
 
 
 def test_happy_day_test():
@@ -338,7 +393,7 @@ def test_happy_day_test():
     do_receiver_request(entities, params, bq_client, connection)
 
     num_rows = count_rows_in_table(bq_client, target_table)
-    assert_equal(3, num_rows)
+    assert num_rows == 3
 
     expected_entities = [
         {"_id": "1", "_updated": 0, "_deleted": False, "code": 1, "global_pipe__foo": ["1"]},
@@ -348,7 +403,7 @@ def test_happy_day_test():
 
     table_entities = bq_client.get_table(target_table)
 
-    assert_equal(expected_entities, table_entities)
+    assert expected_entities == table_entities
 
     entities = [
         {"_id": "1", "_updated": 3, "_deleted": False, "code": 1, "global-pipe:FOO": "1.1"},
@@ -374,7 +429,7 @@ def test_happy_day_test():
     do_receiver_request(entities, params, bq_client, connection)
 
     num_rows = count_rows_in_table(bq_client, target_table)
-    assert_equal(2, num_rows)
+    assert num_rows == 2
 
     expected_entities = [
         {"_id": "1", "_updated": 3, "_deleted": False, "code": 1, "global_pipe__foo": ["1.1"]},
@@ -383,7 +438,7 @@ def test_happy_day_test():
 
     table_entities = bq_client.get_table(target_table)
 
-    assert_equal(expected_entities, table_entities)
+    assert expected_entities == table_entities
 
 
 def test_insert_array_test():
@@ -450,7 +505,7 @@ def test_insert_array_test():
     do_receiver_request(entities, params, bq_client, connection)
 
     num_rows = count_rows_in_table(bq_client, target_table)
-    assert_equal(3, num_rows)
+    assert num_rows == 3
 
     expected_entities = [
         {"_id": "1", "_updated": 0, "_deleted": False, "global_pipe__foo": ["1", "1.1"]},
@@ -460,7 +515,7 @@ def test_insert_array_test():
 
     table_entities = bq_client.get_table(target_table)
 
-    assert_equal(expected_entities, table_entities)
+    assert expected_entities == table_entities
 
     entities = [
         {"_id": "1", "_updated": 3, "_deleted": False, "global-pipe:FOO": ["1", "1.2"]},
@@ -483,7 +538,7 @@ def test_insert_array_test():
     do_receiver_request(entities, params, bq_client, connection)
 
     num_rows = count_rows_in_table(bq_client, target_table)
-    assert_equal(2, num_rows)
+    assert num_rows == 2
 
     expected_entities = [
         {"_id": "1", "_updated": 3, "_deleted": False, "global_pipe__foo": ["1", "1.2"]},
@@ -492,7 +547,7 @@ def test_insert_array_test():
 
     table_entities = bq_client.get_table(target_table)
 
-    assert_equal(expected_entities, table_entities)
+    assert expected_entities == table_entities
 
 
 def test_schema_generation():
@@ -583,10 +638,10 @@ def test_schema_generation():
 
     schema = SchemaInfo("global-pipe", connection)
 
-    assert_equal(schema.pipe_schema_url, "http://localhost:9042/api/pipes/global-pipe/entity-types/sink")
+    assert schema.pipe_schema_url == "http://localhost:9042/api/pipes/global-pipe/entity-types/sink"
 
-    assert_equal(schema.cast_columns, ['_ids', 'global_pipe__bar_code', 'global_pipe__foo',
-                                       'global_user__organization_id_ni', 'zendesk_user__user_fields'])
+    assert schema.cast_columns == ['_ids', 'global_pipe__bar_code', 'global_pipe__foo',
+                                   'global_user__organization_id_ni', 'zendesk_user__user_fields']
 
     translated_properties = {
         '$ids': '_ids',
@@ -601,52 +656,187 @@ def test_schema_generation():
         'global-person:department-name': 'global_person__department_name',
         'global-pipe:FOO': 'global_pipe__foo'
     }
-    assert_equal(schema.property_column_translation, translated_properties)
+    assert schema.property_column_translation == translated_properties
 
-    assert_equal(schema.bigquery_schema["_ids"].mode, "REPEATED")
-    assert_equal(schema.bigquery_schema["_ids"].is_nullable, False)
-    assert_equal(schema.bigquery_schema["_ids"].field_type, "STRING")
+    assert schema.bigquery_schema["_ids"].mode == "REPEATED"
+    assert schema.bigquery_schema["_ids"].is_nullable is False
+    assert schema.bigquery_schema["_ids"].field_type == "STRING"
 
-    assert_equal(schema.bigquery_schema["_deleted"].mode, "NULLABLE")
-    assert_equal(schema.bigquery_schema["_deleted"].is_nullable, True)
-    assert_equal(schema.bigquery_schema["_deleted"].field_type, "BOOLEAN")
+    assert schema.bigquery_schema["_deleted"].mode == "NULLABLE"
+    assert schema.bigquery_schema["_deleted"].is_nullable is True
+    assert schema.bigquery_schema["_deleted"].field_type == "BOOLEAN"
 
-    assert_equal(schema.bigquery_schema["_id"].mode, "NULLABLE")
-    assert_equal(schema.bigquery_schema["_id"].is_nullable, True)
-    assert_equal(schema.bigquery_schema["_id"].field_type, "STRING")
+    assert schema.bigquery_schema["_id"].mode == "NULLABLE"
+    assert schema.bigquery_schema["_id"].is_nullable is True
+    assert schema.bigquery_schema["_id"].field_type == "STRING"
 
-    assert_equal(schema.bigquery_schema["_updated"].mode, "NULLABLE")
-    assert_equal(schema.bigquery_schema["_updated"].is_nullable, True)
-    assert_equal(schema.bigquery_schema["_updated"].field_type, "INTEGER")
+    assert schema.bigquery_schema["_updated"].mode == "NULLABLE"
+    assert schema.bigquery_schema["_updated"].is_nullable is True
+    assert schema.bigquery_schema["_updated"].field_type == "INTEGER"
 
-    assert_equal(schema.bigquery_schema["description"].mode, "NULLABLE")
-    assert_equal(schema.bigquery_schema["description"].is_nullable, True)
-    assert_equal(schema.bigquery_schema["description"].field_type, "STRING")
+    assert schema.bigquery_schema["description"].mode == "NULLABLE"
+    assert schema.bigquery_schema["description"].is_nullable is True
+    assert schema.bigquery_schema["description"].field_type == "STRING"
 
-    assert_equal(schema.bigquery_schema["global_pipe__bar_code"].mode, "REPEATED")
-    assert_equal(schema.bigquery_schema["global_pipe__bar_code"].is_nullable, False)
-    assert_equal(schema.bigquery_schema["global_pipe__bar_code"].field_type, "BIGNUMERIC")
+    assert schema.bigquery_schema["global_pipe__bar_code"].mode == "REPEATED"
+    assert schema.bigquery_schema["global_pipe__bar_code"].is_nullable is False
+    assert schema.bigquery_schema["global_pipe__bar_code"].field_type == "BIGNUMERIC"
 
-    assert_equal(schema.bigquery_schema["zendesk_user__user_fields"].mode, "NULLABLE")
-    assert_equal(schema.bigquery_schema["zendesk_user__user_fields"].is_nullable, True)
-    assert_equal(schema.bigquery_schema["zendesk_user__user_fields"].field_type, "STRING")
+    assert schema.bigquery_schema["zendesk_user__user_fields"].mode == "NULLABLE"
+    assert schema.bigquery_schema["zendesk_user__user_fields"].is_nullable is True
+    assert schema.bigquery_schema["zendesk_user__user_fields"].field_type == "STRING"
 
-    assert_equal(schema.bigquery_schema["zendesk_user__user_fields"].mode, "NULLABLE")
-    assert_equal(schema.bigquery_schema["zendesk_user__user_fields"].is_nullable, True)
-    assert_equal(schema.bigquery_schema["zendesk_user__user_fields"].field_type, "STRING")
+    assert schema.bigquery_schema["zendesk_user__user_fields"].mode == "NULLABLE"
+    assert schema.bigquery_schema["zendesk_user__user_fields"].is_nullable is True
+    assert schema.bigquery_schema["zendesk_user__user_fields"].field_type == "STRING"
 
-    assert_equal(schema.bigquery_schema["global_user__organization_id_ni"].mode, "NULLABLE")
-    assert_equal(schema.bigquery_schema["global_user__organization_id_ni"].is_nullable, True)
-    assert_equal(schema.bigquery_schema["global_user__organization_id_ni"].field_type, "STRING")
+    assert schema.bigquery_schema["global_user__organization_id_ni"].mode == "NULLABLE"
+    assert schema.bigquery_schema["global_user__organization_id_ni"].is_nullable is True
+    assert schema.bigquery_schema["global_user__organization_id_ni"].field_type == "STRING"
 
-    assert_equal(schema.bigquery_schema["global_pipe__some_flag"].mode, "NULLABLE")
-    assert_equal(schema.bigquery_schema["global_pipe__some_flag"].is_nullable, True)
-    assert_equal(schema.bigquery_schema["global_pipe__some_flag"].field_type, "BOOLEAN")
+    assert schema.bigquery_schema["global_pipe__some_flag"].mode == "NULLABLE"
+    assert schema.bigquery_schema["global_pipe__some_flag"].is_nullable is True
+    assert schema.bigquery_schema["global_pipe__some_flag"].field_type == "BOOLEAN"
 
-    assert_equal(schema.bigquery_schema["global_person__department_name"].mode, "NULLABLE")
-    assert_equal(schema.bigquery_schema["global_person__department_name"].is_nullable, True)
-    assert_equal(schema.bigquery_schema["global_person__department_name"].field_type, "STRING")
+    assert schema.bigquery_schema["global_person__department_name"].mode == "NULLABLE"
+    assert schema.bigquery_schema["global_person__department_name"].is_nullable is True
+    assert schema.bigquery_schema["global_person__department_name"].field_type == "STRING"
 
-    assert_equal(schema.bigquery_schema["global_pipe__foo"].mode, "REPEATED")
-    assert_equal(schema.bigquery_schema["global_pipe__foo"].is_nullable, False)
-    assert_equal(schema.bigquery_schema["global_pipe__foo"].field_type, "BIGNUMERIC")
+    assert schema.bigquery_schema["global_pipe__foo"].mode == "REPEATED"
+    assert schema.bigquery_schema["global_pipe__foo"].is_nullable is False
+    assert schema.bigquery_schema["global_pipe__foo"].field_type == "BIGNUMERIC"
+
+
+def test_lenient_mode():
+    node_config = [{
+        "_id": "global-pipe",
+        "metadata": {
+            "global": True
+        }
+    }]
+
+    node_entity_types = {}
+    node_entity_types["global-pipe"] = {
+        "$id": "/api/pipes/global-pipe/entity-types/sink",
+        "$schema": "http://json-schema.org/schema#",
+        "additionalProperties": True,
+        "properties": {
+            "$ids": {
+                "items": {
+                    "metadata": {
+                        "namespaces": [
+                            "global-pipe"
+                        ]
+                    },
+                    "pattern": "^\\~:global\\-pipe:",
+                    "subtype": "ni",
+                    "type": "string"
+                },
+                "type": "array"
+            },
+            "$replaced": {
+                "type": "boolean"
+            },
+            "code": {
+                "type": "integer"
+            },
+            "global-pipe:FOO": {
+                "anyOf": [
+                    {
+                        "subtype": "decimal",
+                        "type": "string"
+                    },
+                    {
+                        "items": {
+                            "subtype": "decimal",
+                            "type": "string"
+                        },
+                        "type": "array"
+                    }
+                ]
+            },
+        }
+    }
+
+    connection = TestableSesamConnection(node_config, entity_pipe_schemas=node_entity_types)
+
+    schema_info = SchemaInfo("global-pipe", connection)
+
+    bq_client = TestableBQClient(schema_info=schema_info)
+
+    # Verify that we don't accept properties not in the schema when not in lenient mode
+    entities = [
+        {"_id": "1", "_updated": 0, "_deleted": False, "code": 1, "global-pipe:FOO": "~f1", "additional-property": "~f2"},
+        {"_id": "2", "_updated": 1, "_deleted": False, "code": 2, "global-pipe:FOO": "~f2"},
+        {"_id": "3", "_updated": 2, "_deleted": False, "code": 3, "global-pipe:FOO": ["~f3", "~f3.1"]},
+    ]
+
+    target_table = "my-project.my-dataset.targettable"
+
+    # Full first run
+    params = {
+        "pipe_id": "global-pipe",
+        "target_table": target_table,
+        "is_full": "true",
+        "is_first": "true",
+        "is_last": "true",
+        "sequence_id": "0",
+        "request_id": "0",
+        "lenient_mode": "false",
+        "batch_size": 1000
+    }
+
+    with pytest.raises(werkzeug.exceptions.BadRequest) as exc:
+        do_receiver_request(copy.deepcopy(entities), params, bq_client, connection)
+        assert "not in schema" in str(exc.value)
+
+    # Verify that we don't accept properties that doesn't match the type in the schema
+    entities = [
+        {"_id": "1", "_updated": 0, "_deleted": False, "code": "1", "global-pipe:FOO": "~d1"},
+        {"_id": "2", "_updated": 1, "_deleted": False, "code": 2, "global-pipe:FOO": "~f2"},
+        {"_id": "3", "_updated": 2, "_deleted": False, "code": 3, "global-pipe:FOO": ["~d3", "~f3.1"]},
+        {"_id": "4", "_updated": 4, "_deleted": False, "code": [4], "global-pipe:FOO": ["~d4", "~d4.1"]},
+        {"_id": "5", "_updated": 5, "_deleted": False, "code": 5, "global-pipe:FOO": ["~f5", True]},
+    ]
+
+    target_table = "my-project.my-dataset.targettable"
+
+    # Full first run
+    params = {
+        "pipe_id": "global-pipe",
+        "target_table": target_table,
+        "is_full": "true",
+        "is_first": "true",
+        "is_last": "true",
+        "sequence_id": "0",
+        "request_id": "0",
+        "lenient_mode": "false",
+        "batch_size": 1000
+    }
+
+    with pytest.raises(werkzeug.exceptions.BadRequest) as exc:
+        do_receiver_request(copy.deepcopy(entities), params, bq_client, connection)
+
+    assert "match the schema" in str(exc.value)
+
+    # Turn on lenient mode
+    params["lenient_mode"] = "true"
+
+    # This time the property should just get dropped and so not trigger the test
+    do_receiver_request(copy.deepcopy(entities), params, bq_client, connection)
+
+    num_rows = count_rows_in_table(bq_client, target_table)
+    assert num_rows == 5
+
+    # In lenient mode, the properties that contains "misfits" vs the schema should be silently dropped:
+    expected_entities = [
+        {"_id": "1", "_updated": 0, "_deleted": False, "global_pipe__foo": ["1.0"]},
+        {"_id": "2", "_updated": 1, "_deleted": False, "code": 2, "global_pipe__foo": ["2.0"]},
+        {"_id": "3", "_updated": 2, "_deleted": False, "code": 3, "global_pipe__foo": ["3.0", "3.1"]},
+        {"_id": "4", "_updated": 4, "_deleted": False, "global_pipe__foo": ["4.0", "4.1"]},
+        {"_id": "5", "_updated": 5, "_deleted": False, "code": 5},
+    ]
+
+    table_entities = bq_client.get_table(target_table)
+
+    assert expected_entities == table_entities

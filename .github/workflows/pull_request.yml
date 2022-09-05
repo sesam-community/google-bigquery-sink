@@ -13,4 +13,4 @@ jobs:
       - name: Install requirements
         run: pip3 install -r service/requirements.txt
       - name: Run tests
-        run: python3 -m nose
+        run: python3 -m pytest tests
