@@ -22,7 +22,7 @@ The receiver understands these request (URL) parameters:
 * ``pipe_id`` - the pipe to use as source for the bigquery schema
 * ``target_table`` - the name of the table to write to
 * ``batch_size`` - maximum number of rows to insert via the bigquery client per operation, default 1000. Reduce it if you experience limit related errors or hanging client connections.
-* ``lenient`` - set to ``true`` if you want the pipe to be lenient, i.e. skip unknown properties or properties that do not fit the schema (default is to fail)
+* ``lenient_mode`` - set to ``true`` if you want the pipe to be lenient, i.e. skip unknown properties or properties that do not fit the schema (default is to fail)
 
 Note that if ``pipe_id`` is present in the URL then ``target_table`` must be as well.
 
@@ -50,7 +50,7 @@ with the following properties:
 
 ``bootstrap_config_group`` - the config group to generate pipes and systems in, if not set defaults to "analytics"
 
-``bootstrap_pipes_lenient_mode`` - boolean flag to control if all pipes should be created with "lenient" mode set to ``true`` (false by default)
+``bootstrap_pipes_lenient_mode`` - boolean flag to control if all pipes should be created with ``lenient_mode`` to ``true`` (false by default)
 
 ``bootstrap_interval`` - how often (in hours) to rerun the bootstrapping process - the default is 24
 

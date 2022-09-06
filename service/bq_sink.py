@@ -24,7 +24,7 @@ class ChunkTooBigException(Exception):
     pass
 
 
-version = "1.4.0"
+version = "1.4.1"
 
 PIPE_CONFIG_TEMPLATE = """
 {
@@ -38,7 +38,7 @@ PIPE_CONFIG_TEMPLATE = """
     "type": "json",
     "system": "%(system_id)s",
     "batch_size": %(batch_size)s,
-    "url": "receiver?pipe_id=%(dataset_id)s&target_table=%(target_table)s&lenient=%(lenient_mode)s"
+    "url": "receiver?pipe_id=%(dataset_id)s&target_table=%(target_table)s&lenient_mode=%(lenient_mode)s"
   },
   "pump": {
     "schedule_interval": %(interval)s,
