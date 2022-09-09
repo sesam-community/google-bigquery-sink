@@ -24,7 +24,7 @@ class ChunkTooBigException(Exception):
     pass
 
 
-version = "1.4.1"
+version = "1.4.2"
 
 PIPE_CONFIG_TEMPLATE = """
 {
@@ -91,6 +91,7 @@ logger = logging.getLogger("bigquery-sink")
 jwt_token = os.environ.get("JWT_TOKEN")
 node_url = os.environ.get("NODE_URL")
 config_pipe_id = os.environ.get("PIPE_ID")
+rescan_cron_expression = os.environ.get("RESCAN_CRON_EXPRESSION")
 bq_table_prefix = os.environ.get("BIGQUERY_TABLE_PREFIX")
 config_target_table = os.environ.get("TARGET_TABLE")
 bootstrap_pipes_lenient_mode = os.environ.get("BOOTSTRAP_PIPES_LENIENT_MODE", "false").lower() == "true"
@@ -157,6 +158,9 @@ if config_str:
 
     if "google_application_credentials" in config:
         os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = config["google_application_credentials"]
+
+    if "rescan_cron_expression" in config:
+        rescan_cron_expression = config["rescan_cron_expression"]
 
 schema_cache = {}
 client_locks_lock = RLock()
@@ -1119,6 +1123,9 @@ class GlobalBootstrapper:
                 }
 
                 pipe_config = json.loads(PIPE_CONFIG_TEMPLATE % pipe_config_params)
+
+                if rescan_cron_expression is not None:
+                    pipe_config["pump"]["rescan_cron_expression"] = rescan_cron_expression
 
                 new_pipe_configs[bq_pipe_id] = pipe_config
                 if bq_system_id not in new_system_configs or bootstrap_pipes_recreate_pipes is not False:

@@ -44,6 +44,8 @@ with the following properties:
 
 ``pipe_id`` - if not in the "receiver" endpoint URL during run time, you can set it in this variable
 
+``rescan_cron_expression`` - a cron expression for automated rescanning of the generated bigquery share pipes. The default is "not set", meaning no automatic rescan will occur. See https://docs.sesam.io/configuration-pump.html#pump-rescan-cron-expression for details on this property.
+
 ``bootstrap_pipes`` - if set to 'true' will bootstrap one endpoint pipe for each global present in the node
 
 ``bootstrap_single_system`` - if set to 'true' will use a single system with the id "bigquery" for all bootstrapped pipes - note that if changed after the node has already been bootstrapped, it will not remove any existing systems created
