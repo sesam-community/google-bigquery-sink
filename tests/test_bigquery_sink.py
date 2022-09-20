@@ -6,7 +6,8 @@ import google.cloud.exceptions
 import werkzeug.exceptions
 
 from google.cloud import bigquery
-from service.bq_sink import do_receiver_request, count_rows_in_table, SchemaInfo
+from service.bq_sink import do_receiver_request, count_rows_in_table, SesamSchemaInfo, BQSchemaInfo
+from service.bq_sink import filter_and_translate_entity
 
 class TestableRequestReponse:
 
@@ -116,7 +117,7 @@ class TestableBQClient:
             if table_id not in self.table_rows:
                 google.cloud.exceptions.NotFound("No table '%s' was found" % table_id)
 
-            return TestableQueryResult([[len(self.get_table(table_id))]])
+            return TestableQueryResult([[len(self.get_table_rows(table_id))]])
         elif query.find("MERGE") > -1:
             # Merge query - we have to cheat here and just extract the source and target tables
             # and implement the query with python. So if the merge query changes, this code needs to
@@ -189,7 +190,9 @@ class TestableBQClient:
                     # Verify that all entity properties we're about to insert are in the schema
                     translated_keys = list(self.schema_info.property_column_translation.values())
                     for key in keys:
-                        if key not in translated_keys:
+                        translated_key = self.schema_info.translate_key(key)
+                        if key not in self.schema_info.seen_field_types and \
+                                key not in self.schema_info.valid_internal_properties:
                             raise AssertionError("Property '%s' is not in schema" % key)
 
                     # Check that the types match the schema
@@ -223,7 +226,10 @@ class TestableBQClient:
             raise google.cloud.exceptions.NotFound("No table '%s' was found" % table_id)
 
     def create_table(self, table_obj):
-        table_id = str(table_obj.reference)
+        if isinstance(table_obj, str):
+            table_id = table_obj
+        else:
+            table_id = str(table_obj.reference)
         if table_id in self.table_rows:
             raise google.cloud.exceptions.Conflict("A table with id '%s' already exists" % table_id)
 
@@ -238,6 +244,16 @@ class TestableBQClient:
         self.table_row_indexes.pop(table_id, None)
 
     def get_table(self, table_id):
+        if table_id not in self.table_rows:
+            raise google.cloud.exceptions.NotFound("No table '%s' was found" % table_id)
+
+        # Not really used for anything
+        if self.schema_info is not None:
+            return bigquery.Table(table_id, schema=list(self.schema_info.bigquery_schema.values()))
+        else:
+            return bigquery.Table(table_id, schema=[])
+
+    def get_table_rows(self, table_id):
         if table_id not in self.table_rows:
             raise google.cloud.exceptions.NotFound("No table '%s' was found" % table_id)
 
@@ -279,7 +295,7 @@ def test_merge_result():
 
     bq_client.query(merge_query)
 
-    table_rows = bq_client.get_table(target_table)
+    table_rows = bq_client.get_table_rows(target_table)
 
     expected_rows = [
         {"_id": "2", "_updated": 1, "_deleted": False, "foo": "2"},
@@ -310,7 +326,7 @@ def test_merge_result():
         {"_id": "3", "_updated": 11, "_deleted": False, "foo": "3.5"}
     ]
 
-    table_rows = bq_client.get_table(target_table)
+    table_rows = bq_client.get_table_rows(target_table)
 
     assert table_rows == expected_rows
 
@@ -368,7 +384,11 @@ def test_happy_day_test():
     }
 
     connection = TestableSesamConnection(node_config, entity_pipe_schemas=node_entity_types)
-    bq_client = TestableBQClient()
+
+    sesam_schema = SesamSchemaInfo("global-pipe", connection)
+
+    # We can use the sesam-schema for full runs
+    bq_client = TestableBQClient(schema_info=sesam_schema)
 
     entities = [
         {"_id": "1", "_updated": 0, "_deleted": False, "code": 1, "global-pipe:FOO": "1"},
@@ -401,7 +421,7 @@ def test_happy_day_test():
         {"_id": "3", "_updated": 2, "_deleted": False, "code": 3, "global_pipe__foo": ["3", "3.1"]},
     ]
 
-    table_entities = bq_client.get_table(target_table)
+    table_entities = bq_client.get_table_rows(target_table)
 
     assert expected_entities == table_entities
 
@@ -413,6 +433,13 @@ def test_happy_day_test():
         {"_id": "3", "_updated": 7, "_deleted": True,  "code": 3, "global-pipe:FOO": "3.3"},
         {"_id": "3", "_updated": 8, "_deleted": False,  "code": 3, "global-pipe:FOO": "3.4"}
     ]
+
+    # For incremental runs we need to simulate an existing BQ table by using a pre-existing bq schema
+    existing_bq_schema = list(sesam_schema.bigquery_schema.values())
+    bq_schema = BQSchemaInfo(existing_bq_schema, sesam_schema)
+    bq_client = TestableBQClient(schema_info=bq_schema)
+
+    bq_client.create_table(target_table)
 
     # Delta
     params = {
@@ -436,7 +463,7 @@ def test_happy_day_test():
         {"_id": "3", "_updated": 8, "_deleted": False, "code": 3, "global_pipe__foo": ["3.4"]},
     ]
 
-    table_entities = bq_client.get_table(target_table)
+    table_entities = bq_client.get_table_rows(target_table)
 
     assert expected_entities == table_entities
 
@@ -480,7 +507,9 @@ def test_insert_array_test():
     }
 
     connection = TestableSesamConnection(node_config, entity_pipe_schemas=node_entity_types)
-    bq_client = TestableBQClient()
+    sesam_schema = SesamSchemaInfo("global-pipe", connection)
+
+    bq_client = TestableBQClient(schema_info=sesam_schema)
 
     entities = [
         {"_id": "1", "_updated": 0, "_deleted": False, "global-pipe:FOO": ["1", "1.1"]},
@@ -513,7 +542,7 @@ def test_insert_array_test():
         {"_id": "3", "_updated": 2, "_deleted": False, "global_pipe__foo": ["3", "3.1"]},
     ]
 
-    table_entities = bq_client.get_table(target_table)
+    table_entities = bq_client.get_table_rows(target_table)
 
     assert expected_entities == table_entities
 
@@ -535,6 +564,12 @@ def test_insert_array_test():
         "batch_size": 1000
     }
 
+    # For incremental runs we need to simulate an existing BQ table by using a pre-existing bq schema
+    existing_bq_schema = list(sesam_schema.bigquery_schema.values())
+    bq_schema = BQSchemaInfo(existing_bq_schema, sesam_schema)
+    bq_client = TestableBQClient(schema_info=bq_schema)
+    bq_client.create_table(target_table)
+
     do_receiver_request(entities, params, bq_client, connection)
 
     num_rows = count_rows_in_table(bq_client, target_table)
@@ -545,7 +580,7 @@ def test_insert_array_test():
         {"_id": "3", "_updated": 5, "_deleted": False, "global_pipe__foo": ["3", "3.2"]},
     ]
 
-    table_entities = bq_client.get_table(target_table)
+    table_entities = bq_client.get_table_rows(target_table)
 
     assert expected_entities == table_entities
 
@@ -636,7 +671,7 @@ def test_schema_generation():
 
     connection = TestableSesamConnection(node_config, entity_pipe_schemas=node_entity_types)
 
-    schema = SchemaInfo("global-pipe", connection)
+    schema = SesamSchemaInfo("global-pipe", connection)
 
     assert schema.pipe_schema_url == "http://localhost:9042/api/pipes/global-pipe/entity-types/sink"
 
@@ -656,7 +691,12 @@ def test_schema_generation():
         'global-person:department-name': 'global_person__department_name',
         'global-pipe:FOO': 'global_pipe__foo'
     }
-    assert schema.property_column_translation == translated_properties
+
+    result = {}
+    for key in translated_properties:
+        result[key] = schema.translate_key(key)
+
+    assert result == translated_properties
 
     assert schema.bigquery_schema["_ids"].mode == "REPEATED"
     assert schema.bigquery_schema["_ids"].is_nullable is False
@@ -705,6 +745,220 @@ def test_schema_generation():
     assert schema.bigquery_schema["global_pipe__foo"].mode == "REPEATED"
     assert schema.bigquery_schema["global_pipe__foo"].is_nullable is False
     assert schema.bigquery_schema["global_pipe__foo"].field_type == "BIGNUMERIC"
+
+
+def test_entity_filtering():
+    node_config = [{
+        "_id": "global-pipe",
+        "metadata": {
+            "global": True
+        }
+    }]
+
+    node_entity_types = {}
+    node_entity_types["global-pipe"] = {
+        "$id": "/api/pipes/global-pipe/entity-types/sink",
+        "$schema": "http://json-schema.org/schema#",
+        "additionalProperties": True,
+        "properties": {
+            "$ids": {
+                "items": {
+                    "metadata": {
+                        "namespaces": [
+                            "global-pipe"
+                        ]
+                    },
+                    "pattern": "^\\~:global\\-pipe:",
+                    "subtype": "ni",
+                    "type": "string"
+                },
+                "type": "array"
+            },
+            "$replaced": {
+                "type": "boolean"
+            },
+            "code": {
+                "type": "integer"
+            },
+            "global-pipe:FOO": {
+                "anyOf": [
+                    {
+                        "subtype": "decimal",
+                        "type": "string"
+                    },
+                    {
+                        "items": {
+                            "subtype": "decimal",
+                            "type": "string"
+                        },
+                        "type": "array"
+                    }
+                ]
+            },
+            "global-pipe:meh": {
+                "items": {
+                    "type": "string"
+                },
+                "type": "array"
+            },
+        }
+    }
+
+    connection = TestableSesamConnection(node_config, entity_pipe_schemas=node_entity_types)
+    sesam_schema_info = SesamSchemaInfo("global-pipe", connection)
+
+    bq_schema_fields = [
+        bigquery.SchemaField('_id', 'STRING', 'NULLABLE'),
+        bigquery.SchemaField('_deleted', 'BOOLEAN', 'NULLABLE'),
+        bigquery.SchemaField('_updated', 'INTEGER', 'NULLABLE'),
+        bigquery.SchemaField('_ids', 'STRING', 'REPEATED'),
+        bigquery.SchemaField('code', 'INTEGER', 'NULLABLE'),
+        bigquery.SchemaField("global_pipe__foo", "BIGNUMERIC", mode="REPEATED")
+    ]
+
+    target_table = bigquery.Table("my-project.my-dataset.targettable", schema=bq_schema_fields)
+
+    bq_schema_info = BQSchemaInfo(target_table.schema, sesam_schema_info)
+
+    # Verify that the "normal" case with sesam schema == bq schema works as expected
+
+    entity = {"_id": "3", "_updated": 2, "_deleted": False, "code": 3, "global-pipe:FOO": ["~f3", "~f3.1"]}
+
+    translated_entity = filter_and_translate_entity(copy.deepcopy(entity), bq_schema_info, lenient_mode=False)
+
+    assert translated_entity == {"_id": "3", "_updated": 2, "_deleted": False,
+                                 "code": 3, "global_pipe__foo": ["3.0", "3.1"]}
+
+    # Verify that "extra" properties as passed through when not in lenient mode
+
+    entity = {"_id": "3", "_updated": 2, "_deleted": False, "code": 3, "global-pipe:FOO": ["~f3", "~f3.1"],
+              "additional-property": "~f2"}
+
+    translated_entity = filter_and_translate_entity(copy.deepcopy(entity), bq_schema_info, lenient_mode=False)
+
+    assert translated_entity == {"_id": "3", "_updated": 2, "_deleted": False,
+                                 "code": 3, "global_pipe__foo": ["3.0", "3.1"], "additional-property": "~f2"}
+
+    # Verify that no attempt of rectifying a wrong type is done when not in lenient mode
+
+    entity = {"_id": "3", "_updated": 2, "_deleted": "False", "code": 3, "global-pipe:FOO": True}
+
+    translated_entity = filter_and_translate_entity(copy.deepcopy(entity), bq_schema_info, lenient_mode=False)
+
+    assert translated_entity == {"_id": "3", "_updated": 2, "_deleted": "False", "code": 3, "global_pipe__foo": [
+        'True']}
+
+    # Check that making the bq and entity-type schema divert also makes "unknown" or wrong-type
+    # properties pass through as-is in non-lenient mode
+    bq_schema_fields = [
+        bigquery.SchemaField('_id', 'STRING', 'NULLABLE'),
+        bigquery.SchemaField('_deleted', 'BOOLEAN', 'NULLABLE'),
+        bigquery.SchemaField('_updated', 'INTEGER', 'NULLABLE'),
+        bigquery.SchemaField('_ids', 'STRING', 'REPEATED'),
+        # bigquery.SchemaField('code', 'INTEGER', 'NULLABLE'),     # Remove 'code' from the BQ schema
+        bigquery.SchemaField("global_pipe__foo", "BIGNUMERIC", mode="REPEATED")
+    ]
+
+    target_table = bigquery.Table("my-project.my-dataset.targettable", schema=bq_schema_fields)
+    bq_schema_info = BQSchemaInfo(target_table.schema, sesam_schema_info)
+
+    entity = {"_id": "3", "_updated": 2, "_deleted": "False", "code": 3, "global-pipe:FOO": ["~f3", "~f3.1", True],
+              "additional-property": "~f2"}
+
+    translated_entity = filter_and_translate_entity(copy.deepcopy(entity), bq_schema_info, lenient_mode=False)
+
+    assert translated_entity == {"_id": "3", "_updated": 2, "_deleted": "False",
+                                 "code": 3, "global_pipe__foo": ["3.0", "3.1", "True"], "additional-property": "~f2"}
+
+    # Verify that any "unknown" property types gets properly removed in lenient mode
+
+    entity = {"_id": "3", "_updated": 2, "_deleted": False, "code": 3, "global-pipe:FOO": ["~f3", "~f3.1"],
+              "additional-property": "~f2"}
+
+    translated_entity = filter_and_translate_entity(copy.deepcopy(entity), bq_schema_info, lenient_mode=True)
+
+    assert translated_entity == {"_id": "3", "_updated": 2, "_deleted": False, "global_pipe__foo": ["3.0", "3.1"]}
+
+    # Verify that properties of the wrong type dropped in lenient mode
+
+    entity = {"_id": "3", "_updated": 2, "_deleted": "False", "code": 3, "global-pipe:FOO": [True, "~f3.0"]}
+
+    translated_entity = filter_and_translate_entity(copy.deepcopy(entity), bq_schema_info, lenient_mode=True)
+
+    assert translated_entity == {"_id": "3", "_updated": 2}
+
+    entity = {"_id": "3", "_updated": 2, "_deleted": "False", "code": 3, "global-pipe:FOO": ["~f3.0"]}
+
+    translated_entity = filter_and_translate_entity(copy.deepcopy(entity), bq_schema_info, lenient_mode=True)
+
+    assert translated_entity == {"_id": "3", "_updated": 2, "global_pipe__foo": ["3.0"]}
+
+    bq_schema_fields = [
+        bigquery.SchemaField('_id', 'STRING', 'NULLABLE'),
+        bigquery.SchemaField('_deleted', 'BOOLEAN', 'NULLABLE'),
+        bigquery.SchemaField('_updated', 'INTEGER', 'NULLABLE'),
+        bigquery.SchemaField('_ids', 'STRING', 'REPEATED'),
+        bigquery.SchemaField('code', 'INTEGER', 'NULLABLE'),
+        bigquery.SchemaField("global_pipe__foo", "BIGNUMERIC")  # No longer a list
+    ]
+
+    target_table = bigquery.Table("my-project.my-dataset.targettable", schema=bq_schema_fields)
+    bq_schema_info = BQSchemaInfo(target_table.schema, sesam_schema_info)
+
+    entity = {"_id": "3", "_updated": 2, "_deleted": "False", "code": 3, "global-pipe:FOO": ["~f3.0"],
+              "global-pipe:meh":[1]}
+
+    translated_entity = filter_and_translate_entity(copy.deepcopy(entity), bq_schema_info, lenient_mode=True)
+
+    assert translated_entity == {"_id": "3", "_updated": 2, "code": 3}
+
+    # Check that casting mis-matching sesam types to a bq string works for the global-pipe:meh property (translated
+    # to global_pipe__meh), which we here claim is of type STRING in the BQ table..
+    bq_schema_fields = [
+        bigquery.SchemaField('_id', 'STRING', 'NULLABLE'),
+        bigquery.SchemaField('_deleted', 'BOOLEAN', 'NULLABLE'),
+        bigquery.SchemaField('_updated', 'INTEGER', 'NULLABLE'),
+        bigquery.SchemaField('_ids', 'STRING', 'REPEATED'),
+        bigquery.SchemaField('code', 'INTEGER', 'NULLABLE'),
+        bigquery.SchemaField("global_pipe__foo", "BIGNUMERIC") , # No longer a list
+        bigquery.SchemaField("global_pipe__meh", "STRING")  # String, but not repeated
+    ]
+
+    target_table = bigquery.Table("my-project.my-dataset.targettable", schema=bq_schema_fields)
+    bq_schema_info = BQSchemaInfo(target_table.schema, sesam_schema_info)
+
+    entity = {"_id": "3", "_updated": 2, "_deleted": "False", "code": 3, "global-pipe:FOO": ["~f3.0"],
+              "global-pipe:meh": [1]}
+
+    translated_entity = filter_and_translate_entity(copy.deepcopy(entity), bq_schema_info, lenient_mode=True)
+
+    assert translated_entity == {"_id": "3", "_updated": 2, "code": 3, "global_pipe__meh": "[1]"}
+
+    entity = {"_id": "3", "_updated": 2, "_deleted": "False", "code": 3, "global-pipe:FOO": ["~f3.0"],
+              "global-pipe:meh": True}
+
+    translated_entity = filter_and_translate_entity(copy.deepcopy(entity), bq_schema_info, lenient_mode=True)
+
+    assert translated_entity == {"_id": "3", "_updated": 2, "code": 3, "global_pipe__meh": "true"}
+
+    entity = {"_id": "3", "_updated": 2, "_deleted": "False", "code": 3, "global-pipe:FOO": ["~f3.0"],
+              "global-pipe:meh": "~f1.0"}
+
+    translated_entity = filter_and_translate_entity(copy.deepcopy(entity), bq_schema_info, lenient_mode=True)
+
+    assert translated_entity == {"_id": "3", "_updated": 2, "code": 3, "global_pipe__meh": "1.0"}
+
+    entity = {"_id": "3", "_updated": 2, "_deleted": "Nope", "code": 3, "global-pipe:FOO": ["~f3.0"],
+              "global-pipe:meh": {"hm": "mm"}}
+
+    translated_entity = filter_and_translate_entity(copy.deepcopy(entity), bq_schema_info, lenient_mode=False)
+
+    # None-lenient mode will leave unknown properties be and cast any "complex" values to json, if the schema
+    # doesn't match it'll likely fail the insert, for example the value of "global_pipe__foo" below is of type
+    # BIGNUMERIC and not STRING, and the value of "_deleted" is a string that will be rejected by BQ.
+    assert translated_entity == {"_id": "3",  '_deleted': 'Nope', "_updated": 2, "code": 3,
+                                 "global_pipe__foo": '["~f3.0"]',
+                                 "global_pipe__meh": '{"hm": "mm"}'}
 
 
 def test_lenient_mode():
@@ -760,7 +1014,7 @@ def test_lenient_mode():
 
     connection = TestableSesamConnection(node_config, entity_pipe_schemas=node_entity_types)
 
-    schema_info = SchemaInfo("global-pipe", connection)
+    schema_info = SesamSchemaInfo("global-pipe", connection)
 
     bq_client = TestableBQClient(schema_info=schema_info)
 
@@ -837,6 +1091,6 @@ def test_lenient_mode():
         {"_id": "5", "_updated": 5, "_deleted": False, "code": 5},
     ]
 
-    table_entities = bq_client.get_table(target_table)
+    table_entities = bq_client.get_table_rows(target_table)
 
     assert expected_entities == table_entities

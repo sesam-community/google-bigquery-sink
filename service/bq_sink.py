@@ -18,6 +18,7 @@ from google.cloud.exceptions import NotFound
 from google.api_core.exceptions import GoogleAPICallError
 from decimal import Decimal
 from threading import RLock, Thread
+from copy import copy
 
 
 class ChunkTooBigException(Exception):
@@ -264,20 +265,22 @@ def create_table(bq_client, table_id, schema, replace=False):
                 raise AssertionError(msg)
 
 
-class SchemaInfo:
+class SesamSchemaInfo:
     entity_schema = {}
     bigquery_schema = {}
-    property_column_translation = {}
+    _property_column_translation = {}
     cast_columns = {}
     rows_seen = 0
     seen_field_types = {}
     nonvalid_underscore_properties = []
-    array_propery_filter_nulls = {}
+    array_property_filter_nulls = {}
     pipe_id = None
 
     valid_internal_properties = ["_id", "_updated", "_deleted"]
 
     def __init__(self, pipe_id, sesam_node_connection):
+        self._property_column_translation = {}
+
         self.sesam_node_connection = sesam_node_connection
         self.pipe_id = pipe_id
         self.pipe_schema_url = sesam_node_connection.sesamapi_base_url + "pipes/" + pipe_id + "/entity-types/sink"
@@ -290,6 +293,38 @@ class SchemaInfo:
 
         self.update_schema()
 
+    def translate_key(self, key):
+        # Look up in cache
+        if key in self._property_column_translation:
+            return self._property_column_translation[key]
+
+        translated_key = key.lower().replace(":", "__")
+
+        s = ""
+        for c in translated_key:
+            if ord(c) > 127:
+                if c == "å":
+                    s += "a"
+                elif c == "æ":
+                    s += "a"
+                elif c == "ø":
+                    s += "o"
+                else:
+                    s += "_"
+            elif not (c.isalpha() or c.isdigit()):
+                s += "_"
+            else:
+                s += c
+
+        self._property_column_translation[key] = s
+
+        return s
+
+    @property
+    def property_column_translation(self):
+        # Guard against unintentional modifications
+        return copy(self._property_column_translation)
+
     def update_schema(self):
         r = self.sesam_node_connection.do_get_request(self.pipe_schema_url)
         _entity_schema = r.json()
@@ -297,10 +332,9 @@ class SchemaInfo:
 
         _cast_columns = []
         _bigquery_schema = {}
-        _property_column_translation = {}
         _seen_field_types = {}
         _nonvalid_underscore_properties = {}
-        _array_propery_filter_nulls = {}
+        _array_property_filter_nulls = {}
 
         for key, value in _entity_schema["properties"].items():
             if key[0] == "_" and key not in self.valid_internal_properties:
@@ -309,26 +343,7 @@ class SchemaInfo:
                 continue
 
             mode = "NULLABLE"
-            translated_key = key.lower().replace(":", "__")
-
-            s = ""
-            for c in translated_key:
-                if ord(c) > 127:
-                    if c == "å":
-                        s += "a"
-                    elif c == "æ":
-                        s += "a"
-                    elif c == "ø":
-                        s += "o"
-                    else:
-                        s += "_"
-                elif not (c.isalpha() or c.isdigit()):
-                    s += "_"
-                else:
-                    s += c
-
-            translated_key = s
-            _property_column_translation[key] = translated_key
+            translated_key = self.translate_key(key)
 
             logger.debug("Processing field '%s'" % translated_key)
             logger.debug("Value '%s'" % value)
@@ -397,7 +412,7 @@ class SchemaInfo:
                                 value = value["items"]["anyOf"][0]
 
                             mode = "REPEATED"
-                            _array_propery_filter_nulls[translated_key] = True
+                            _array_property_filter_nulls[translated_key] = True
 
                 if "subtype" not in value:
                     field_type = value["type"]
@@ -451,10 +466,73 @@ class SchemaInfo:
         self.entity_schema = _entity_schema
         self.cast_columns = _cast_columns
         self.bigquery_schema = _bigquery_schema
-        self.property_column_translation = _property_column_translation
         self.seen_field_types = _seen_field_types
         self.nonvalid_underscore_properties = list(_nonvalid_underscore_properties.keys())
-        self.array_propery_filter_nulls = _array_propery_filter_nulls
+        self.array_property_filter_nulls = _array_property_filter_nulls
+
+
+class BQSchemaInfo(SesamSchemaInfo):
+
+    def __init__(self, bq_schema, sesam_schema_info):
+        self._property_column_translation = {}
+
+        self.bigquery_schema = {}
+        for schema_field in bq_schema:
+            self.bigquery_schema[schema_field.name] = schema_field
+        self.pipe_id = sesam_schema_info.pipe_id
+        self.pipe_schema_url = sesam_schema_info.pipe_schema_url
+        self.entity_schema = sesam_schema_info.entity_schema
+        self.nonvalid_underscore_properties = sesam_schema_info.nonvalid_underscore_properties
+        self.array_property_filter_nulls = sesam_schema_info.array_property_filter_nulls
+        self.default_properties = sesam_schema_info.default_properties
+        self.cast_columns = sesam_schema_info.cast_columns
+
+        self.update_schema()
+
+        # We might have more cast columns: if the current bq type is of type string but the sesam type is an
+        # array or some other non-string type, then we can leniently render the sesam property as a json string
+        # so it can be inserted into bq
+        for key, translated_key in sesam_schema_info.property_column_translation.items():
+            if translated_key in self.bigquery_schema:
+                bq_schema_field = self.bigquery_schema[translated_key]
+                if translated_key in sesam_schema_info.bigquery_schema:
+                    sesam_bq_schema_field = sesam_schema_info.bigquery_schema[translated_key]
+                    bq_field_type = self.seen_field_types[translated_key]
+                    sesam_field_type = sesam_schema_info.seen_field_types[translated_key]
+
+                    if bq_field_type == "string":
+                        cast_value = False
+
+                        if sesam_bq_schema_field.mode == "REPEATED" and bq_schema_field.mode != "REPEATED":
+                            cast_value = True
+                        elif sesam_field_type != "string":
+                            cast_value = True
+
+                        if cast_value and translated_key not in self.cast_columns:
+                            self.cast_columns.append(translated_key)
+
+    def update_schema(self):
+        _seen_field_types = {}
+
+        for schema_field in self.bigquery_schema.values():
+            translated_key = schema_field.name
+            if schema_field.field_type == "INTEGER":
+                field_type = "integer"
+            elif schema_field.field_type == "BOOLEAN":
+                field_type = "boolean"
+            elif schema_field.field_type == "BIGNUMERIC":
+                field_type = "decimal"
+            elif schema_field.field_type == "TIMESTAMP":
+                field_type = "nanoseconds"
+            elif schema_field.field_type == "STRING":
+                field_type = "string"
+            else:
+                # Default
+                field_type = "string"
+
+            _seen_field_types[translated_key] = field_type
+
+        self.seen_field_types = _seen_field_types
 
 
 def count_rows_in_table(bq_client, table, retries=0, timeout=None, prefix=''):
@@ -673,6 +751,13 @@ def insert_entities_into_table_mt(bq_client, table, entities, batch_size=1000):
         raise AssertionError("One or more threads failed to insert their partition, see the service log for details")
 
 
+def is_transit_encoded(_value):
+    if isinstance(_value, str) and len(_value) > 1 and _value[0] == "~":
+        return True
+
+    return False
+
+
 def cast_value(_value, stringify=True):
     # Check if we need to transit decode this value
     if isinstance(_value, str) and len(_value) > 1 and _value[0] == "~":
@@ -698,173 +783,201 @@ def cast_value(_value, stringify=True):
     return _value
 
 
+def filter_and_translate_entity(entity, schema_info, lenient_mode):
+    if entity.get("_deleted", False) is True:
+        # Skip translation of deleted entities, their properties are most likely not relevant anyway and will
+        # be stripped away upon insert into the temp table
+        entity = {"_id": entity["_id"], "_deleted": True, "_updated": entity["_updated"]}
+    else:
+        for key in list(entity.keys()):
+            # Remove invalid underscore properties (unneeded internals and user-created ones that the dataset
+            # sink would strip away in any case)
+            if key[0] == "_" and key not in schema_info.valid_internal_properties:
+                entity.pop(key, None)
+
+        if lenient_mode:
+            for filter_key in list(entity.keys()):
+                translated_key = schema_info.translate_key(filter_key)
+                if translated_key not in schema_info.bigquery_schema:
+                    # The property doesn't exist in the schema. In lenient mode we just drop it from the entity.
+                    entity.pop(filter_key, None)
+
+            # At this point we know that all properties left in the entity can be found in the BQ schema,
+            # but they might be of the wrong type, so we need check that they have the correct type (or can be cast
+            # to it)
+            for key, value in list(entity.items()):
+                translated_key = schema_info.translate_key(key)
+
+                # Look up the field type - note that in a full run, this will be exact conversion since we just
+                # recreated the target table. But when doing an incremental run this will lack some detail
+                # because we're then basing on the BQ schema and not the entity-type schema. This means we can
+                # only do a best-effort on "casting" in incremental mode.
+                field_type = schema_info.seen_field_types[translated_key]
+
+                # Let's consult the "entity-type" derived cast info to see if we need to do any casting
+                if translated_key in schema_info.cast_columns:
+                    if schema_info.bigquery_schema[translated_key].mode == "REPEATED":
+                        if not isinstance(value, list):
+                            if value is not None:
+                                value = [value]
+                            else:
+                                value = []
+
+                    if isinstance(value, dict):
+                        if field_type == "string":
+                            # Cast object values to string directly
+                            value = json.dumps(value)
+                        else:
+                            # If the input type is a dict and the target type isn't a string, we skip this property in
+                            # lenient mode
+                            entity.pop(key, None)
+                            continue
+
+                    elif isinstance(value, list):
+                        if len(value) > 4096:
+                            value = sorted(value)[:4096]
+
+                        # Check if this is a supported list
+                        if schema_info.bigquery_schema[translated_key].mode == "REPEATED":
+                            result = []
+                            discard_property = False
+                            for litem in value:
+                                if litem is None and translated_key in schema_info.array_property_filter_nulls:
+                                    # Array of single-value + NULL, we have to drop the NULLs as BQ doesn't support them
+                                    continue
+
+                                # Check that all items in the list is of the correct type or can be cast to it
+                                if field_type in ['bytes', 'uuid', 'uri', 'ni', 'string']:
+                                    if not isinstance(litem, str):
+                                        # Schema type mismatch, drop the property
+                                        discard_property = True
+                                        break
+                                elif field_type == "boolean":
+                                    if not isinstance(litem, bool):
+                                        # Schema type mismatch, drop the property
+                                        discard_property = True
+                                        break
+                                elif field_type in ["integer", "decimal", "number"]:
+                                    _value = cast_value(litem, stringify=False)
+                                    if not type(_value) in (int, float):
+                                        # Schema type mismatch, drop the property
+                                        discard_property = True
+                                        break
+                                elif field_type == "nanoseconds":
+                                    _value = cast_value(litem, stringify=False)
+                                    if not isinstance(_value, str):
+                                        # Schema type mismatch, drop the property
+                                        discard_property = True
+                                        break
+
+                                result.append(cast_value(litem))
+
+                            if discard_property:
+                                entity.pop(key, None)
+                                continue
+                            else:
+                                value = result
+                        else:
+                            if field_type == "string":
+                                # In lenient mode, ff the target field type is a string, we just serialize the list
+                                # to json and hope for the best
+                                value = json.dumps(value)
+                            else:
+                                # If the input type is a list but the target schema doesn't support arrays, we skip
+                                # the property
+                                entity.pop(key, None)
+                                continue
+                    elif value is not None:
+                        if is_transit_encoded(value):
+                            value = cast_value(value)
+                        else:
+                            value = json.dumps(value)
+                else:
+                    # Either the property doesn't need casting or it doesn't exist (anymore) in the entity-type
+                    # schema. Let's just look at its type then (as best we can).
+                    if field_type in ['bytes', 'uuid', 'uri', 'ni', 'string']:
+                        if not isinstance(value, str):
+                            # Schema type mismatch, drop the property
+                            entity.pop(key, None)
+                            continue
+                    elif field_type == "boolean":
+                        if not isinstance(value, bool):
+                            # Schema type mismatch, drop the property
+                            entity.pop(key, None)
+                            continue
+                    elif field_type in ["integer", "decimal", "number"]:
+                        _value = cast_value(value, stringify=False)
+                        if not type(_value) in (int, float):
+                            # Schema type mismatch, drop the property
+                            entity.pop(key, None)
+                            continue
+                    elif field_type == "nanoseconds":
+                        _value = cast_value(value, stringify=False)
+                        if not isinstance(_value, str):
+                            # Schema type mismatch, drop the property
+                            entity.pop(key, None)
+                            continue
+
+                if translated_key != key:
+                    entity.pop(key, None)
+
+                entity[translated_key] = value
+        else:
+            for key, value in list(entity.items()):
+                # Translate properties->columns
+                translated_key = schema_info.translate_key(key)
+                if translated_key not in schema_info.seen_field_types:
+                    # Unknown property, in non-lenient mode we leave it as-is and let the insert fail later
+                    continue
+
+                # Check if this property needs to be cast to another type to fit the BQ schema type
+                if translated_key in schema_info.cast_columns:
+                    if schema_info.bigquery_schema[translated_key].mode == "REPEATED":
+                        if not isinstance(value, list):
+                            if value is not None:
+                                value = [value]
+                            else:
+                                value = []
+
+                    if isinstance(value, dict):
+                        # Cast object values to string directly
+                        # TODO: should we transit decode stuff recursively first?
+                        value = json.dumps(value)
+                    elif isinstance(value, list):
+                        if len(value) > 4096:
+                            value = sorted(value)[:4096]
+
+                        # Check if this is a supported list
+                        if schema_info.bigquery_schema[translated_key].mode == "REPEATED":
+                            result = []
+                            # Truncate lists at 4096 to avoid a hanging insert, sort the list to make it deterministic
+                            for litem in value:
+                                if litem is None and translated_key in schema_info.array_property_filter_nulls:
+                                    # Array of single-value + NULL, we have to drop the NULLs as BQ doesn't support them
+                                    continue
+                                result.append(cast_value(litem))
+                            value = result
+                        else:
+                            # Columns with mixed values we just serialize to json
+                            value = json.dumps(value)
+                    elif value is not None:
+                        value = cast_value(value)
+
+                if translated_key != key:
+                    # If the key needs to be "translated", remove the original from the entity
+                    entity.pop(key, None)
+
+                entity[translated_key] = value
+
+    return entity
+
+
 def insert_into_bigquery(bq_client, target_table, entities, schema_info, request_id, sequence_id, multithreaded=False,
                          batch_size=1000, lenient_mode=False):
     # Remove irrelevant properties and translate property names and, if needed, values
     filtered_entities = []
     for entity in entities:
-        if entity.get("_deleted", False) is True:
-            # Skip translation of deleted entities, their properties are most likely not relevant anyway and will
-            # be stripped away upon insert into the temp table
-            entity = {"_id": entity["_id"], "_deleted": True, "_updated": entity["_updated"]}
-        else:
-            for key in list(entity.keys()):
-                # Remove invalid underscore properties (unneeded internals and user-created ones that the dataset
-                # sink would strip away in any case)
-                if key[0] == "_" and key not in schema_info.valid_internal_properties:
-                    entity.pop(key, None)
-
-            if lenient_mode:
-                for filter_key in list(entity.keys()):
-                    translated_key = schema_info.property_column_translation.get(filter_key, None)
-                    if translated_key is None:
-                        # The property doesn't exist in the schema. In lenient mode we just drop it from the entity.
-                        entity.pop(filter_key, None)
-
-                for key in schema_info.property_column_translation:
-                    # Translate properties->columns
-                    if key not in entity:
-                        continue
-
-                    value = entity.get(key)
-                    translated_key = schema_info.property_column_translation.get(key, None)
-                    field_type = schema_info.seen_field_types[translated_key]
-
-                    if translated_key in schema_info.cast_columns:
-                        if schema_info.bigquery_schema[translated_key].mode == "REPEATED":
-                            if not isinstance(value, list):
-                                if value is not None:
-                                    value = [value]
-                                else:
-                                    value = []
-
-                        if isinstance(value, dict):
-                            # Cast object values to string directly
-                            # TODO: should we transit decode stuff recursively first?
-                            value = json.dumps(value)
-                        elif isinstance(value, list):
-                            if len(value) > 4096:
-                                value = sorted(value)[:4096]
-
-                            # Check if this is a supported list
-                            if schema_info.bigquery_schema[translated_key].mode == "REPEATED":
-                                result = []
-                                discard_property = False
-                                for litem in value:
-                                    if litem is None and translated_key in schema_info.array_propery_filter_nulls:
-                                        # Array of single-value + NULL, we have to drop the NULLs as BQ doesn't support them
-                                        continue
-
-                                    # Check that all items in the list is of the correct type or can be cast to it
-                                    if field_type in ['bytes', 'uuid', 'uri', 'ni', 'string']:
-                                        if not isinstance(value, str):
-                                            # Schema type mismatch, drop the property
-                                            discard_property = True
-                                            break
-                                    elif field_type == "boolean":
-                                        if not isinstance(litem, bool):
-                                            # Schema type mismatch, drop the property
-                                            discard_property = True
-                                            break
-                                    elif field_type in ["integer", "decimal", "number"]:
-                                        _value = cast_value(litem, stringify=False)
-                                        if not type(_value) in (int, float):
-                                            # Schema type mismatch, drop the property
-                                            discard_property = True
-                                            break
-                                    elif field_type == "nanoseconds":
-                                        _value = cast_value(litem, stringify=False)
-                                        if not isinstance(_value, str):
-                                            # Schema type mismatch, drop the property
-                                            discard_property = True
-                                            break
-
-                                    result.append(cast_value(litem))
-
-                                if discard_property:
-                                    entity.pop(key, None)
-                                    continue
-                                else:
-                                    value = result
-                            else:
-                                # Columns with mixed values we just serialize to json and hope for the best
-                                value = json.dumps(value)
-                        elif value is not None:
-                            value = cast_value(value)
-                    else:
-                        if field_type in ['bytes', 'uuid', 'uri', 'ni', 'string']:
-                            if not isinstance(value, str):
-                                # Schema type mismatch, drop the property
-                                entity.pop(key, None)
-                                continue
-                        elif field_type == "boolean":
-                            if not isinstance(value, bool):
-                                # Schema type mismatch, drop the property
-                                entity.pop(key, None)
-                                continue
-                        elif field_type in ["integer", "decimal", "number"]:
-                            _value = cast_value(value, stringify=False)
-                            if not type(_value) in (int, float):
-                                # Schema type mismatch, drop the property
-                                entity.pop(key, None)
-                                continue
-                        elif field_type == "nanoseconds":
-                            _value = cast_value(value, stringify=False)
-                            if not isinstance(_value, str):
-                                # Schema type mismatch, drop the property
-                                entity.pop(key, None)
-                                continue
-
-                    if translated_key != key:
-                        entity.pop(key, None)
-
-                    entity[translated_key] = value
-            else:
-                for key in schema_info.property_column_translation:
-                    # Translate properties->columns
-                    if key not in entity:
-                        continue
-
-                    value = entity.get(key)
-                    translated_key = schema_info.property_column_translation.get(key, key)
-
-                    if translated_key in schema_info.cast_columns:
-                        if schema_info.bigquery_schema[translated_key].mode == "REPEATED":
-                            if not isinstance(value, list):
-                                if value is not None:
-                                    value = [value]
-                                else:
-                                    value = []
-
-                        if isinstance(value, dict):
-                            # Cast object values to string directly
-                            # TODO: should we transit decode stuff recursively first?
-                            value = json.dumps(value)
-                        elif isinstance(value, list):
-                            if len(value) > 4096:
-                                value = sorted(value)[:4096]
-
-                            # Check if this is a supported list
-                            if schema_info.bigquery_schema[translated_key].mode == "REPEATED":
-                                result = []
-                                # Truncate lists at 4096 to avoid a hanging insert, sort the list to make it deterministic
-                                for litem in value:
-                                    if litem is None and translated_key in schema_info.array_propery_filter_nulls:
-                                        # Array of single-value + NULL, we have to drop the NULLs as BQ doesn't support them
-                                        continue
-                                    result.append(cast_value(litem))
-                                value = result
-                            else:
-                                # Columns with mixed values we just serialize to json
-                                value = json.dumps(value)
-                        elif value is not None:
-                            value = cast_value(value)
-
-                    if translated_key != key:
-                        entity.pop(key, None)
-
-                    entity[translated_key] = value
-
+        entity = filter_and_translate_entity(entity, schema_info, lenient_mode)
         filtered_entities.append(entity)
 
     # Create a separate source table. The tables will be merged later.
@@ -986,30 +1099,37 @@ def do_receiver_request(entities, request_args, bq_client, sesam_node_connection
                              f"target table '{request_target_table}' is already running")
 
     try:
-        schema_info = schema_cache.get(request_pipe_id)
+        sesam_schema_info = schema_cache.get(request_pipe_id)
         if is_full:
             if is_first:
                 # Update the schema info on full run, first batch + recreate the target table
 
                 logger.info("Refreshing entity schema from pipe '%s'..." % request_pipe_id)
                 schema_cache.pop(request_pipe_id, None)
-                schema_info = SchemaInfo(request_pipe_id, sesam_node_connection)
-                logger.info("Created schema '%s'..." % schema_info)
+                sesam_schema_info = SesamSchemaInfo(request_pipe_id, sesam_node_connection)
+                logger.info("Created schema '%s'..." % sesam_schema_info)
 
-                schema_cache[request_pipe_id] = schema_info
+                schema_cache[request_pipe_id] = sesam_schema_info
 
                 # Recreate the target table
                 logger.info("Recreating target table '%s'..." % request_target_table)
-                create_table(bq_client, request_target_table, schema_info.bigquery_schema, replace=True)
+                create_table(bq_client, request_target_table, sesam_schema_info.bigquery_schema, replace=True)
 
             # Skip deleted entities if this is a full run - the target table will be empty so nothing will be deleted
             # anyway
             entities = [ent for ent in entities if ent.get("_deleted", False) is False]
 
         if len(entities) > 0:
-            if schema_info is None:
-                schema_info = SchemaInfo(request_pipe_id, sesam_node_connection)
-                schema_cache[request_pipe_id] = schema_info
+            if sesam_schema_info is None:
+                sesam_schema_info = SesamSchemaInfo(request_pipe_id, sesam_node_connection)
+                schema_cache[request_pipe_id] = sesam_schema_info
+
+            if is_full is False:
+                # In incremental mode, the schema we're interested in is the existing BQ schema not the entity-type
+                # schema
+                schema_info = BQSchemaInfo(bq_client.get_table(request_target_table).schema, sesam_schema_info)
+            else:
+                schema_info = sesam_schema_info
 
             insert_into_bigquery(bq_client, request_target_table, entities, schema_info, request_id, sequence_id,
                                  multithreaded=use_multithreaded, batch_size=batch_size, lenient_mode=lenient_mode)
@@ -1017,12 +1137,12 @@ def do_receiver_request(entities, request_args, bq_client, sesam_node_connection
             logger.info("Skipping empty batch...")
 
         if is_first:
-            schema_info.rows_seen = len(entities)
+            sesam_schema_info.rows_seen = len(entities)
         else:
-            schema_info.rows_seen += len(entities)
+            sesam_schema_info.rows_seen += len(entities)
 
         if is_last:
-            logger.info("I saw %s rows during this run" % schema_info.rows_seen)
+            logger.info("I saw %s rows during this run" % sesam_schema_info.rows_seen)
     except BaseException as e:
         logger.exception("Something went wrong")
         raise BadRequest(f"Something went wrong! {str(e)}")
