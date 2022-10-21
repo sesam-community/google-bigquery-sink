@@ -107,6 +107,7 @@ config_batch_size = 1000
 bootstrap_docker_image_name = os.environ.get("BOOTSTRAP_DOCKER_IMAGE_NAME",
                                              "sesamcommunity/google-bigquery-sink:development")
 _batch_size = os.environ.get("BATCH_SIZE")
+google_user_credentials = json.loads(os.environ.get("GOOGLE_USER_CREDENTIALS", "{}"))
 
 config_str = os.environ.get("CONFIG")
 if config_str:
@@ -162,7 +163,7 @@ if config_str:
         os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = config["google_application_credentials"]
 
     if "google_user_credentials" in config:
-        os.environ['GOOGLE_USER_CREDENTIALS'] = config["google_user_credentials"]
+        google_user_credentials = config["google_user_credentials"]
 
     if "rescan_cron_expression" in config:
         rescan_cron_expression = config["rescan_cron_expression"]
@@ -1300,14 +1301,6 @@ class GlobalBootstrapper:
 
 
 if __name__ == '__main__':
-    user_credentials = None
-    if 'GOOGLE_APPLICATION_CREDENTIALS' not in os.environ and "GOOGLE_USER_CREDENTIALS" in os.environ:
-        # we are using existing access token authorization
-        try:
-            user_credentials = json.loads(os.environ["GOOGLE_USER_CREDENTIALS"])
-        except json.JSONDecodeError as e:
-            logger.error(f"Error decoding the GOOGLE_USER_CREDENTIALS variable: {e.msg}")
-
     if 'GOOGLE_APPLICATION_CREDENTIALS' not in os.environ:
         # Local dev env for mikkel
         credentials_path = '/home/mikkel/Desktop/BigQueryMicroservice/BigQueryMicroservice/SmallScale/bigquery-microservice-8767565ff502.json'
@@ -1327,9 +1320,9 @@ if __name__ == '__main__':
     if not node_url:
         raise AssertionError("'NODE_URL' parameter not set")
 
-    if user_credentials:
-        project = user_credentials.pop("project")
-        credentials = google.oauth2.credentials.Credentials.from_authorized_user_info(user_credentials)
+    if google_user_credentials:
+        project = google_user_credentials.pop("project")
+        credentials = google.oauth2.credentials.Credentials.from_authorized_user_info(google_user_credentials)
         client = bigquery.Client(project=project, credentials=credentials)
     else:
         client = bigquery.Client()
