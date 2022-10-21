@@ -16,6 +16,7 @@ from werkzeug.exceptions import NotFound, BadRequest
 from google.cloud import bigquery
 from google.cloud.exceptions import NotFound
 from google.api_core.exceptions import GoogleAPICallError
+import google.oauth2.credentials
 from decimal import Decimal
 from threading import RLock, Thread
 from copy import copy
@@ -159,6 +160,9 @@ if config_str:
 
     if "google_application_credentials" in config:
         os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = config["google_application_credentials"]
+
+    if "google_user_credentials" in config:
+        os.environ['GOOGLE_USER_CREDENTIALS'] = config["google_user_credentials"]
 
     if "rescan_cron_expression" in config:
         rescan_cron_expression = config["rescan_cron_expression"]
@@ -1296,6 +1300,14 @@ class GlobalBootstrapper:
 
 
 if __name__ == '__main__':
+    user_credentials = None
+    if 'GOOGLE_APPLICATION_CREDENTIALS' not in os.environ and "GOOGLE_USER_CREDENTIALS" in os.environ:
+        # we are using existing access token authorization
+        try:
+            user_credentials = json.loads(os.environ["GOOGLE_USER_CREDENTIALS"])
+        except json.JSONDecodeError as e:
+            logger.error(f"Error decoding the GOOGLE_USER_CREDENTIALS variable: {e.msg}")
+
     if 'GOOGLE_APPLICATION_CREDENTIALS' not in os.environ:
         # Local dev env for mikkel
         credentials_path = '/home/mikkel/Desktop/BigQueryMicroservice/BigQueryMicroservice/SmallScale/bigquery-microservice-8767565ff502.json'
@@ -1315,7 +1327,12 @@ if __name__ == '__main__':
     if not node_url:
         raise AssertionError("'NODE_URL' parameter not set")
 
-    client = bigquery.Client()
+    if user_credentials:
+        project = user_credentials.pop("project")
+        credentials = google.oauth2.credentials.Credentials.from_authorized_user_info(user_credentials)
+        client = bigquery.Client(project=project, credentials=credentials)
+    else:
+        client = bigquery.Client()
     node_connection = sesamclient.Connection(node_url, jwt_auth_token=jwt_token, timeout=5*60)
 
     format_string = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
