@@ -303,12 +303,11 @@ class SesamSchemaInfo:
         if key in self._property_column_translation:
             return self._property_column_translation[key]
 
+        translated_key = key.lower().replace(":", "__")
+
         s = ""
         if len(key) > 0 and key[0].isdigit():
             s += "s"
-
-        translated_key = key.lower().replace(":", "__")
-
         for c in translated_key:
             if ord(c) > 127:
                 if c == "å":
