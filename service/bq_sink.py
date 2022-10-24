@@ -299,14 +299,13 @@ class SesamSchemaInfo:
         self.update_schema()
 
     def translate_key(self, key):
+        # Look up in cache
+        if key in self._property_column_translation:
+            return self._property_column_translation[key]
 
         s = ""
         if len(key) > 0 and key[0].isdigit():
             s += "s"
-
-        # Look up in cache
-        if key in self._property_column_translation:
-            return self._property_column_translation[key]
 
         translated_key = key.lower().replace(":", "__")
 
