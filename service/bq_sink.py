@@ -306,6 +306,8 @@ class SesamSchemaInfo:
         translated_key = key.lower().replace(":", "__")
 
         s = ""
+        if len(key) > 0 and key[0].isdigit():
+            s += "s"
         for c in translated_key:
             if ord(c) > 127:
                 if c == "å":

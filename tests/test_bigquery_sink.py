@@ -666,6 +666,9 @@ def test_schema_generation():
                 },
                 "type": "array"
             },
+            "2022-global-pipe:baz": {
+                "type": "boolean" # unimportant
+            }
         }
     }
 
@@ -689,7 +692,8 @@ def test_schema_generation():
         'global-user:organization_id-ni': 'global_user__organization_id_ni',
         'global-pipe:some_flag': 'global_pipe__some_flag',
         'global-person:department-name': 'global_person__department_name',
-        'global-pipe:FOO': 'global_pipe__foo'
+        'global-pipe:FOO': 'global_pipe__foo',
+        '2022-global-pipe:baz': 's2022_global_pipe__baz'
     }
 
     result = {}
@@ -745,6 +749,10 @@ def test_schema_generation():
     assert schema.bigquery_schema["global_pipe__foo"].mode == "REPEATED"
     assert schema.bigquery_schema["global_pipe__foo"].is_nullable is False
     assert schema.bigquery_schema["global_pipe__foo"].field_type == "BIGNUMERIC"
+
+    assert schema.bigquery_schema["s2022_global_pipe__baz"].mode == "NULLABLE"
+    assert schema.bigquery_schema["s2022_global_pipe__baz"].is_nullable is True
+    assert schema.bigquery_schema["s2022_global_pipe__baz"].field_type == "BOOLEAN"
 
 
 def test_entity_filtering():
