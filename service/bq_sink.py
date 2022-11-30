@@ -108,7 +108,7 @@ bootstrap_docker_image_name = os.environ.get("BOOTSTRAP_DOCKER_IMAGE_NAME",
                                              "sesamcommunity/google-bigquery-sink:development")
 _batch_size = os.environ.get("BATCH_SIZE")
 google_user_credentials = json.loads(os.environ.get("GOOGLE_USER_CREDENTIALS", "{}"))
-
+google_application_credentials = None
 config_str = os.environ.get("CONFIG")
 if config_str:
     try:
@@ -160,7 +160,7 @@ if config_str:
         _batch_size = config["batch_size"]
 
     if "google_application_credentials" in config:
-        os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = config["google_application_credentials"]
+        google_application_credentials = config["google_application_credentials"]
 
     if "google_user_credentials" in config:
         google_user_credentials = config["google_user_credentials"]
@@ -1303,7 +1303,12 @@ class GlobalBootstrapper:
 
 
 if __name__ == '__main__':
-    if 'GOOGLE_APPLICATION_CREDENTIALS' not in os.environ:
+    if google_application_credentials:
+        # Dev env in the cloud
+        with open("/tmp/bigquery-microservice-58c39f7392e7.json", "w") as outfile:
+            json.dump(google_application_credentials, outfile)
+        os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = "/tmp/bigquery-microservice-58c39f7392e7.json"
+    else:
         # Local dev env for mikkel
         credentials_path = '/home/mikkel/Desktop/BigQueryMicroservice/BigQueryMicroservice/SmallScale/bigquery-microservice-8767565ff502.json'
 
@@ -1312,12 +1317,6 @@ if __name__ == '__main__':
             credentials_path = '/home/tomb/Downloads/bigquery-microservice-58c39f7392e7.json'
 
         os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = credentials_path
-    else:
-        # Dev env in the cloud
-        credentials_content = os.environ['GOOGLE_APPLICATION_CREDENTIALS']
-        with open("/tmp/bigquery-microservice-58c39f7392e7.json", "w") as outfile:
-            outfile.write(credentials_content)
-        os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = "/tmp/bigquery-microservice-58c39f7392e7.json"
 
     if not node_url:
         raise AssertionError("'NODE_URL' parameter not set")
