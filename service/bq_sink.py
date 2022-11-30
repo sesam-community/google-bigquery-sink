@@ -1326,7 +1326,6 @@ if __name__ == '__main__':
         credentials = google.oauth2.credentials.Credentials.from_authorized_user_info(google_user_credentials)
         client = bigquery.Client(project=project, credentials=credentials)
     else:
-        google.oauth2.credentials.Credentials.from_authorized_user_info(google_user_credentials)
         client = bigquery.Client()
     node_connection = sesamclient.Connection(node_url, jwt_auth_token=jwt_token, timeout=5*60)
 
